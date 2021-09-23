@@ -32,6 +32,8 @@ import { BrowserType } from '../client/browserType';
 import { BrowserContextOptions, LaunchOptions } from '../client/types';
 import { spawn } from 'child_process';
 import { registry, Executable } from '../utils/registry';
+import { launchGridAgent } from '../grid/gridAgent';
+import { launchGridServer } from '../grid/gridServer';
 
 const packageJSON = require('../../package.json');
 
@@ -67,8 +69,9 @@ commandWithOpenOptions('codegen [url]', 'open page and generate code for user ac
 });
 
 program
-    .command('debug <app> [args...]')
+    .command('debug <app> [args...]', { hidden: true })
     .description('run command in debug mode: disable timeout, open inspector')
+    .allowUnknownOption(true)
     .action(function(app, args) {
       spawn(app, args, {
         env: { ...process.env, PWDEBUG: '1' },
@@ -86,7 +89,7 @@ function suggestedBrowsersToInstall() {
   return registry.executables().filter(e => e.installType !== 'none' && e.type !== 'tool').map(e => e.name).join(', ');
 }
 
-function checkBrowsersToInstall(args: string[]) {
+function checkBrowsersToInstall(args: string[]): Executable[] {
   const faultyArguments: string[] = [];
   const executables: Executable[] = [];
   for (const arg of args) {
@@ -106,12 +109,20 @@ function checkBrowsersToInstall(args: string[]) {
 program
     .command('install [browser...]')
     .description('ensure browsers necessary for this version of Playwright are installed')
-    .action(async function(args: string[]) {
+    .option('--with-deps', 'install system dependencies for browsers')
+    .action(async function(args: string[], command: program.Command) {
       try {
-        if (!args.length)
-          await registry.install();
-        else
-          await registry.install(checkBrowsersToInstall(args));
+        if (!args.length) {
+          const executables = registry.defaultExecutables();
+          if (command.opts().withDeps)
+            await registry.installDeps(executables);
+          await registry.install(executables);
+        } else {
+          const executables = checkBrowsersToInstall(args);
+          if (command.opts().withDeps)
+            await registry.installDeps(executables);
+          await registry.install(executables);
+        }
       } catch (e) {
         console.log(`Failed to install browsers\n${e}`);
         process.exit(1);
@@ -133,7 +144,7 @@ program
     .action(async function(args: string[]) {
       try {
         if (!args.length)
-          await registry.installDeps();
+          await registry.installDeps(registry.defaultExecutables());
         else
           await registry.installDeps(checkBrowsersToInstall(args));
       } catch (e) {
@@ -196,6 +207,23 @@ commandWithOpenOptions('pdf <url> <filename>', 'save page as pdf',
 });
 
 program
+    .command('experimental-grid-server', { hidden: true })
+    .option('--port <port>', 'grid port; defaults to 3333')
+    .option('--agent-factory <factory>', 'path to grid agent factory or npm package')
+    .option('--auth-token <authToken>', 'optional authentication token')
+    .action(function(options) {
+      launchGridServer(options.agentFactory, options.port || 3333, options.authToken);
+    });
+
+program
+    .command('experimental-grid-agent', { hidden: true })
+    .requiredOption('--agent-id <agentId>', 'agent ID')
+    .requiredOption('--grid-url <gridURL>', 'grid URL')
+    .action(function(options) {
+      launchGridAgent(options.agentId, options.gridUrl);
+    });
+
+program
     .command('show-trace [trace]')
     .option('-b, --browser <browserType>', 'browser to use, one of cr, chromium, ff, firefox, wk, webkit', 'chromium')
     .description('Show trace viewer')
@@ -243,7 +271,7 @@ if (!process.env.PW_CLI_TARGET_LANG) {
 if (process.argv[2] === 'run-driver')
   runDriver();
 else if (process.argv[2] === 'run-server')
-  runServer(process.argv[3] ? +process.argv[3] : undefined, process.argv[4]).catch(logErrorAndExit);
+  runServer(process.argv[3] ? +process.argv[3] : undefined).catch(logErrorAndExit);
 else if (process.argv[2] === 'print-api-json')
   printApiJson();
 else if (process.argv[2] === 'launch-server')
@@ -263,6 +291,7 @@ type Options = {
   loadStorage?: string;
   proxyServer?: string;
   saveStorage?: string;
+  saveTrace?: string;
   timeout: string;
   timezone?: string;
   viewportSize?: string;
@@ -379,6 +408,8 @@ async function launchContext(options: Options, headless: boolean, executablePath
     if (closingBrowser)
       return;
     closingBrowser = true;
+    if (options.saveTrace)
+      await context.tracing.stop({ path: options.saveTrace });
     if (options.saveStorage)
       await context.storageState({ path: options.saveStorage }).catch(e => null);
     await browser.close();
@@ -398,6 +429,9 @@ async function launchContext(options: Options, headless: boolean, executablePath
     context.setDefaultTimeout(parseInt(options.timeout, 10));
     context.setDefaultNavigationTimeout(parseInt(options.timeout, 10));
   }
+
+  if (options.saveTrace)
+    await context.tracing.start({ screenshots: true, snapshots: true });
 
   // Omit options that we add automatically for presentation purpose.
   delete launchOptions.headless;
@@ -541,6 +575,7 @@ function commandWithOpenOptions(command: string, description: string, options: a
       .option('--lang <language>', 'specify language / locale, for example "en-GB"')
       .option('--proxy-server <proxy>', 'specify proxy server, for example "http://myproxy:3128" or "socks5://myproxy:8080"')
       .option('--save-storage <filename>', 'save context storage state at the end, for later use with --load-storage')
+      .option('--save-trace <filename>', 'record a trace for the session and save it to a file')
       .option('--timezone <time zone>', 'time zone to emulate, for example "Europe/Rome"')
       .option('--timeout <timeout>', 'timeout for Playwright actions in milliseconds', '10000')
       .option('--user-agent <ua string>', 'specify user agent string')

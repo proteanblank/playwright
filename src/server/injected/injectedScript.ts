@@ -16,25 +16,36 @@
 
 import { SelectorEngine, SelectorRoot } from './selectorEngine';
 import { XPathEngine } from './xpathSelectorEngine';
+import { ReactEngine } from './reactSelectorEngine';
+import { VueEngine } from './vueSelectorEngine';
 import { ParsedSelector, ParsedSelectorPart, parseSelector } from '../common/selectorParser';
 import { FatalDOMError } from '../common/domErrors';
 import { SelectorEvaluatorImpl, isVisible, parentElementOrShadowHost, elementMatchesText, TextMatcher, createRegexTextMatcher, createStrictTextMatcher, createLaxTextMatcher } from './selectorEvaluator';
 import { CSSComplexSelectorList } from '../common/cssParser';
+import { generateSelector } from './selectorGenerator';
+import type { ExpectedTextValue } from '../../protocol/channels';
 
 type Predicate<T> = (progress: InjectedScriptProgress, continuePolling: symbol) => T | symbol;
 
 export type InjectedScriptProgress = {
-  aborted: boolean,
-  log: (message: string) => void,
-  logRepeating: (message: string) => void,
+  injectedScript: InjectedScript;
+  aborted: boolean;
+  log: (message: string) => void;
+  logRepeating: (message: string) => void;
+  setIntermediateResult: (intermediateResult: any) => void;
+};
+
+export type LogEntry = {
+  message?: string;
+  intermediateResult?: string;
 };
 
 export type InjectedScriptPoll<T> = {
   run: () => Promise<T>,
   // Takes more logs, waiting until at least one message is available.
-  takeNextLogs: () => Promise<string[]>,
+  takeNextLogs: () => Promise<LogEntry[]>,
   // Takes all current logs without waiting.
-  takeLastLogs: () => string[],
+  takeLastLogs: () => LogEntry[],
   cancel: () => void,
 };
 
@@ -62,6 +73,8 @@ export class InjectedScript {
     this._engines = new Map();
     this._engines.set('xpath', XPathEngine);
     this._engines.set('xpath:light', XPathEngine);
+    this._engines.set('_react', ReactEngine);
+    this._engines.set('_vue', VueEngine);
     this._engines.set('text', this._createTextEngine(true));
     this._engines.set('text:light', this._createTextEngine(false));
     this._engines.set('id', this._createAttributeEngine('id', true));
@@ -73,9 +86,8 @@ export class InjectedScript {
     this._engines.set('data-test', this._createAttributeEngine('data-test', true));
     this._engines.set('data-test:light', this._createAttributeEngine('data-test', false));
     this._engines.set('css', this._createCSSEngine());
-    this._engines.set('_first', { queryAll: () => [] });
-    this._engines.set('_visible', { queryAll: () => [] });
-    this._engines.set('_nth', { queryAll: () => [] });
+    this._engines.set('nth', { queryAll: () => [] });
+    this._engines.set('visible', { queryAll: () => [] });
 
     for (const { name, engine } of customEngines)
       this._engines.set(name, engine);
@@ -84,23 +96,27 @@ export class InjectedScript {
     this._replaceRafWithTimeout = replaceRafWithTimeout;
   }
 
+  eval(expression: string): any {
+    return global.eval(expression);
+  }
+
   parseSelector(selector: string): ParsedSelector {
     const result = parseSelector(selector);
     for (const part of result.parts) {
       if (!this._engines.has(part.name))
-        throw new Error(`Unknown engine "${part.name}" while parsing selector ${selector}`);
+        throw this.createStacklessError(`Unknown engine "${part.name}" while parsing selector ${selector}`);
     }
     return result;
   }
 
   querySelector(selector: ParsedSelector, root: Node, strict: boolean): Element | undefined {
     if (!(root as any)['querySelector'])
-      throw new Error('Node is not queryable.');
+      throw this.createStacklessError('Node is not queryable.');
     this._evaluator.begin();
     try {
       const result = this._querySelectorRecursively([{ element: root as Element, capture: undefined }], selector, 0, new Map());
       if (strict && result.length > 1)
-        throw new Error(`strict mode violation: selector resolved to ${result.length} elements.`);
+        throw this.strictModeViolationError(selector, result.map(r => r.element));
       return result[0]?.capture || result[0]?.element;
     } finally {
       this._evaluator.end();
@@ -112,16 +128,16 @@ export class InjectedScript {
       return roots;
 
     const part = selector.parts[index];
-    if (part.name === '_nth') {
+    if (part.name === 'nth') {
       let filtered: ElementMatch[] = [];
-      if (part.body === 'first') {
+      if (part.body === '0') {
         filtered = roots.slice(0, 1);
-      } else if (part.body === 'last') {
+      } else if (part.body === '-1') {
         if (roots.length)
           filtered = roots.slice(roots.length - 1);
       } else {
         if (typeof selector.capture === 'number')
-          throw new Error(`Can't query n-th element in a request with the capture.`);
+          throw this.createStacklessError(`Can't query n-th element in a request with the capture.`);
         const nth = +part.body;
         const set = new Set<Element>();
         for (const root of roots) {
@@ -133,7 +149,7 @@ export class InjectedScript {
       return this._querySelectorRecursively(filtered, selector, index + 1, queryCache);
     }
 
-    if (part.name === '_visible') {
+    if (part.name === 'visible') {
       const visible = Boolean(part.body);
       return roots.filter(match => visible === isVisible(match.element));
     }
@@ -154,15 +170,18 @@ export class InjectedScript {
         queryResults[index] = all;
       }
 
-      for (const element of all)
+      for (const element of all) {
+        if (!('nodeName' in element))
+          throw this.createStacklessError(`Expected a Node but got ${Object.prototype.toString.call(element)}`);
         result.push({ element, capture });
+      }
     }
     return this._querySelectorRecursively(result, selector, index + 1, queryCache);
   }
 
   querySelectorAll(selector: ParsedSelector, root: Node): Element[] {
     if (!(root as any)['querySelectorAll'])
-      throw new Error('Node is not queryable.');
+      throw this.createStacklessError('Node is not queryable.');
     this._evaluator.begin();
     try {
       const result = this._querySelectorRecursively([{ element: root as Element, capture: undefined }], selector, 0, new Map());
@@ -299,34 +318,43 @@ export class InjectedScript {
   }
 
   private _runAbortableTask<T>(task: (progess: InjectedScriptProgress) => Promise<T>): InjectedScriptPoll<T> {
-    let unsentLogs: string[] = [];
-    let takeNextLogsCallback: ((logs: string[]) => void) | undefined;
+    let unsentLog: LogEntry[] = [];
+    let takeNextLogsCallback: ((logs: LogEntry[]) => void) | undefined;
     let taskFinished = false;
     const logReady = () => {
       if (!takeNextLogsCallback)
         return;
-      takeNextLogsCallback(unsentLogs);
-      unsentLogs = [];
+      takeNextLogsCallback(unsentLog);
+      unsentLog = [];
       takeNextLogsCallback = undefined;
     };
 
-    const takeNextLogs = () => new Promise<string[]>(fulfill => {
+    const takeNextLogs = () => new Promise<LogEntry[]>(fulfill => {
       takeNextLogsCallback = fulfill;
-      if (unsentLogs.length || taskFinished)
+      if (unsentLog.length || taskFinished)
         logReady();
     });
 
-    let lastLog = '';
+    let lastMessage = '';
+    let lastIntermediateResult: any = undefined;
     const progress: InjectedScriptProgress = {
+      injectedScript: this,
       aborted: false,
       log: (message: string) => {
-        lastLog = message;
-        unsentLogs.push(message);
+        lastMessage = message;
+        unsentLog.push({ message });
         logReady();
       },
       logRepeating: (message: string) => {
-        if (message !== lastLog)
+        if (message !== lastMessage)
           progress.log(message);
+      },
+      setIntermediateResult: (intermediateResult: any) => {
+        if (lastIntermediateResult === intermediateResult)
+          return;
+        lastIntermediateResult = intermediateResult;
+        unsentLog.push({ intermediateResult });
+        logReady();
       },
     };
 
@@ -348,7 +376,7 @@ export class InjectedScript {
       takeNextLogs,
       run,
       cancel: () => { progress.aborted = true; },
-      takeLastLogs: () => unsentLogs,
+      takeLastLogs: () => unsentLog,
     };
   }
 
@@ -392,7 +420,7 @@ export class InjectedScript {
 
       for (const state of states) {
         if (state !== 'stable') {
-          const result = this.checkElementState(node, state);
+          const result = this.elementState(node, state);
           if (typeof result !== 'boolean')
             return result;
           if (!result) {
@@ -443,7 +471,7 @@ export class InjectedScript {
       return this.pollRaf(predicate);
   }
 
-  checkElementState(node: Node, state: ElementStateWithoutStable): boolean | 'error:notconnected' | FatalDOMError {
+  elementState(node: Node, state: ElementStateWithoutStable): boolean | 'error:notconnected' | 'error:notcheckbox' {
     const element = this.retarget(node, ['stable', 'visible', 'hidden'].includes(state) ? 'no-follow-label' : 'follow-label');
     if (!element || !element.isConnected) {
       if (state === 'hidden')
@@ -467,7 +495,7 @@ export class InjectedScript {
       return !disabled && editable;
 
     if (state === 'checked') {
-      if (element.getAttribute('role') === 'checkbox')
+      if (['checkbox', 'radio'].includes(element.getAttribute('role') || ''))
         return element.getAttribute('aria-checked') === 'true';
       if (element.nodeName !== 'INPUT')
         return 'error:notcheckbox';
@@ -475,7 +503,7 @@ export class InjectedScript {
         return 'error:notcheckbox';
       return (element as HTMLInputElement).checked;
     }
-    throw new Error(`Unexpected element state "${state}"`);
+    throw this.createStacklessError(`Unexpected element state "${state}"`);
   }
 
   selectOptions(optionsToSelect: (Node | { value?: string, label?: string, index?: number })[],
@@ -685,7 +713,7 @@ export class InjectedScript {
     while (container) {
       // elementFromPoint works incorrectly in Chromium (http://crbug.com/1188919),
       // so we use elementsFromPoint instead.
-      const elements = container.elementsFromPoint(x, y);
+      const elements = (container as Document).elementsFromPoint(x, y);
       const innerElement = elements[0] as Element | undefined;
       if (!innerElement || element === innerElement)
         break;
@@ -730,6 +758,27 @@ export class InjectedScript {
     if (text.length > 50)
       text = text.substring(0, 49) + '\u2026';
     return oneLine(`<${element.nodeName.toLowerCase()}${attrText}>${text}</${element.nodeName.toLowerCase()}>`);
+  }
+
+  strictModeViolationError(selector: ParsedSelector, matches: Element[]): Error {
+    const infos = matches.slice(0, 10).map(m => ({
+      preview: this.previewNode(m),
+      selector: generateSelector(this, m).selector
+    }));
+    const lines = infos.map((info, i) => `\n    ${i + 1}) ${info.preview} aka playwright.$("${info.selector}")`);
+    if (infos.length < matches.length)
+      lines.push('\n    ...');
+    return this.createStacklessError(`strict mode violation: "${selector.selector}" resolved to ${matches.length} elements:${lines.join('')}\n`);
+  }
+
+  createStacklessError(message: string): Error {
+    const error = new Error(message);
+    delete error.stack;
+    return error;
+  }
+
+  expectedTextMatcher(expected: ExpectedTextValue): ExpectedTextMatcher {
+    return new ExpectedTextMatcher(expected);
   }
 }
 
@@ -818,6 +867,38 @@ function createTextMatcher(selector: string): { matcher: TextMatcher, kind: 'reg
   }
   const matcher = strict ? createStrictTextMatcher(selector) : createLaxTextMatcher(selector);
   return { matcher, kind: strict ? 'strict' : 'lax' };
+}
+
+class ExpectedTextMatcher {
+  _string: string | undefined;
+  private _substring: string | undefined;
+  private _regex: RegExp | undefined;
+  private _normalizeWhiteSpace: boolean | undefined;
+
+  constructor(expected: ExpectedTextValue) {
+    this._normalizeWhiteSpace = expected.normalizeWhiteSpace;
+    this._string = expected.matchSubstring ? undefined : this.normalizeWhiteSpace(expected.string);
+    this._substring = expected.matchSubstring ? this.normalizeWhiteSpace(expected.string) : undefined;
+    this._regex = expected.regexSource ? new RegExp(expected.regexSource, expected.regexFlags) : undefined;
+  }
+
+  matches(text: string): boolean {
+    if (this._normalizeWhiteSpace && !this._regex)
+      text = this.normalizeWhiteSpace(text)!;
+    if (this._string !== undefined)
+      return text === this._string;
+    if (this._substring !== undefined)
+      return text.includes(this._substring);
+    if (this._regex)
+      return !!this._regex.test(text);
+    return false;
+  }
+
+  private normalizeWhiteSpace(s: string | undefined): string | undefined {
+    if (!s)
+      return s;
+    return this._normalizeWhiteSpace ? s.trim().replace(/\s+/g, ' ') : s;
+  }
 }
 
 export default InjectedScript;

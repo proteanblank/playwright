@@ -3,7 +3,7 @@
 
 Test runner notifies the reporter about various events during test execution. All methods of the reporter are optional.
 
-You can create a custom reporter my implementing a class with some of the reporter methods. Make sure to export this class as default.
+You can create a custom reporter by implementing a class with some of the reporter methods. Make sure to export this class as default.
 
 ```js js-flavor=js
 // my-awesome-reporter.js
@@ -32,7 +32,7 @@ module.exports = MyReporter;
 ```
 
 ```js js-flavor=ts
-// playwright.config.ts
+// my-awesome-reporter.ts
 import { Reporter } from '@playwright/test/reporter';
 
 class MyReporter implements Reporter {
@@ -55,7 +55,7 @@ class MyReporter implements Reporter {
 export default MyReporter;
 ```
 
-Now use this reporter with [`property: TestConfig.reporter`].
+Now use this reporter with [`property: TestConfig.reporter`]. Learn more about [using reporters](./test-reporters.md).
 
 ```js js-flavor=js
 // playwright.config.js
@@ -79,7 +79,15 @@ const config: PlaywrightTestConfig = {
 export default config;
 ```
 
-Learn more about [reporters](./test-reporters.md).
+Here is a typical order of reporter calls:
+* [`method: Reporter.onBegin`] is called once with a root suite that contains all other suites and tests. Learn more about [suites hierarchy][Suite].
+* [`method: Reporter.onTestBegin`] is called for each test run. It is given a [TestCase] that is executed, and a [TestResult] that is almost empty. Test result will be populated while the test runs (for example, with steps and stdio) and will get final `status` once the test finishes.
+* [`method: Reporter.onStepBegin`] and [`method: Reporter.onStepEnd`] are called for each executed step inside the test. When steps are executed, test run has not finished yet.
+* [`method: Reporter.onTestEnd`] is called when test run has finished. By this time, [TestResult] is complete and you can use [`property: TestResult.status`], [`property: TestResult.error`] and more.
+* [`method: Reporter.onEnd`] is called once after all tests that should run had finished.
+
+Additionally, [`method: Reporter.onStdOut`] and [`method: Reporter.onStdErr`] are called when standard output is produced in the worker process, possibly during a test execution,
+and [`method: Reporter.onError`] is called when something went wrong outside of the test execution.
 
 ## method: Reporter.onBegin
 
@@ -178,7 +186,7 @@ Test that has been started.
 Result of the test run, this object gets populated while the test runs.
 
 ### param: Reporter.onStepBegin.step
-- `result` <[TestStep]>
+- `step` <[TestStep]>
 
 Test step instance.
 
@@ -197,7 +205,7 @@ Test that has been finished.
 Result of the test run.
 
 ### param: Reporter.onStepEnd.step
-- `result` <[TestStep]>
+- `step` <[TestStep]>
 
 Test step instance.
 

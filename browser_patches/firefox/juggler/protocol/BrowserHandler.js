@@ -213,12 +213,16 @@ class BrowserHandler {
     await this._targetRegistry.browserContextForId(browserContextId).setForcedColors(nullToUndefined(forcedColors));
   }
 
-  async ['Browser.setVideoRecordingOptions']({browserContextId, dir, width, height, scale}) {
-    await this._targetRegistry.browserContextForId(browserContextId).setVideoRecordingOptions({dir, width, height, scale});
+  async ['Browser.setVideoRecordingOptions']({browserContextId, options}) {
+    await this._targetRegistry.browserContextForId(browserContextId).setVideoRecordingOptions(options);
   }
 
   async ['Browser.setUserAgentOverride']({browserContextId, userAgent}) {
     await this._targetRegistry.browserContextForId(browserContextId).setDefaultUserAgent(userAgent);
+  }
+
+  async ['Browser.setPlatformOverride']({browserContextId, platform}) {
+    await this._targetRegistry.browserContextForId(browserContextId).setDefaultPlatform(platform);
   }
 
   async ['Browser.setBypassCSP']({browserContextId, bypassCSP}) {
@@ -226,7 +230,7 @@ class BrowserHandler {
   }
 
   async ['Browser.setJavaScriptDisabled']({browserContextId, javaScriptDisabled}) {
-    await this._targetRegistry.browserContextForId(browserContextId).applySetting('javaScriptDisabled', nullToUndefined(javaScriptDisabled));
+    await this._targetRegistry.browserContextForId(browserContextId).setJavaScriptDisabled(javaScriptDisabled);
   }
 
   async ['Browser.setLocaleOverride']({browserContextId, locale}) {
@@ -305,7 +309,12 @@ async function waitForWindowClosed(browserWindow) {
   await new Promise((resolve => {
     const listener = {
       onCloseWindow: window => {
-        if (window === browserWindow) {
+        let domWindow;
+        if (window instanceof Ci.nsIAppWindow)
+          domWindow = window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowInternal || Ci.nsIDOMWindow);
+        else
+          domWindow = window;
+        if (domWindow === browserWindow) {
           Services.wm.removeListener(listener);
           resolve();
         }

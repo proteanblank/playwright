@@ -5,6 +5,104 @@ title: "Release notes"
 
 <!-- TOC -->
 
+## Version 1.15
+
+### 🖱️ Mouse Wheel
+
+By using [`Page.mouse.wheel`](https://playwright.dev/python/docs/api/class-mouse#mouse-wheel) you are now able to scroll vertically or horizontally.
+
+### 📜 New Headers API
+
+Previously it was not possible to get multiple header values of a response. This is now  possible and additional helper functions are available:
+
+- [Request.all_headers()](https://playwright.dev/python/docs/api/class-request#request-all-headers)
+- [Request.headers_array()](https://playwright.dev/python/docs/api/class-request#request-headers-array)
+- [Request.header_value(name: str)](https://playwright.dev/python/docs/api/class-request#request-header-value)
+- [Response.all_headers()](https://playwright.dev/python/docs/api/class-response#response-all-headers)
+- [Response.headers_array()](https://playwright.dev/python/docs/api/class-response#response-headers-array)
+- [Response.header_value(name: str)](https://playwright.dev/python/docs/api/class-response#response-header-value)
+- [Response.header_values(name: str)](https://playwright.dev/python/docs/api/class-response/#response-header-values)
+
+### 🌈 Forced-Colors emulation
+
+Its now possible to emulate the `forced-colors` CSS media feature by passing it in the [context options](https://playwright.dev/python/docs/api/class-browser#browser-new-context-option-forced-colors) or calling [Page.emulate_media()](https://playwright.dev/python/docs/api/class-page#page-emulate-media).
+
+### New APIs
+
+- [Page.route()](https://playwright.dev/python/docs/api/class-page#page-route) accepts new `times` option to specify how many times this route should be matched.
+- [Page.set_checked(selector: str, checked: bool)](https://playwright.dev/python/docs/api/class-page#page-set-checked) and [Locator.set_checked(selector: str, checked: bool)](https://playwright.dev/python/docs/api/class-locator#locator-set-checked) was introduced to set the checked state of a checkbox.
+- [Request.sizes()](https://playwright.dev/python/docs/api/class-request#request-sizes) Returns resource size information for given http request.
+- [BrowserContext.tracing.start_chunk()](https://playwright.dev/python/docs/api/class-tracing#tracing-start-chunk) - Start a new trace chunk.
+- [BrowserContext.tracing.stop_chunk()](https://playwright.dev/python/docs/api/class-tracing#tracing-stop-chunk) - Stops a new trace chunk.
+
+### Browser Versions
+
+- Chromium 96.0.4641.0
+- Mozilla Firefox 92.0
+- WebKit 15.0
+
+## Version 1.14
+
+#### ⚡️ New "strict" mode
+
+Selector ambiguity is a common problem in automation testing. **"strict" mode**
+ensures that your selector points to a single element and throws otherwise.
+
+Pass `strict=true` into your action calls to opt in.
+
+```py
+# This will throw if you have more than one button!
+page.click("button", strict=true)
+```
+
+#### 📍 New [**Locators API**](./api/class-locator)
+
+Locator represents a view to the element(s) on the page. It captures the logic sufficient to retrieve the element at any given moment.
+
+The difference between the [Locator](./api/class-locator) and [ElementHandle](./api/class-elementhandle) is that the latter points to a particular element, while [Locator](./api/class-locator) captures the logic of how to retrieve that element.
+
+Also, locators are **"strict" by default**!
+
+```py
+locator = page.locator("button")
+locator.click()
+```
+
+Learn more in the [documentation](./api/class-locator).
+
+#### 🧩 Experimental [**React**](./selectors#react-selectors) and [**Vue**](./selectors#vue-selectors) selector engines
+
+React and Vue selectors allow selecting elements by its component name and/or property values. The syntax is very similar to [attribute selectors](https://developer.mozilla.org/en-US/docs/Web/CSS/Attribute_selectors) and supports all attribute selector operators.
+
+```py
+page.click("_react=SubmitButton[enabled=true]");
+page.click("_vue=submit-button[enabled=true]");
+```
+
+Learn more in the [react selectors documentation](./selectors#react-selectors) and the [vue selectors documentation](./selectors#vue-selectors).
+
+#### ✨ New [**`nth`**](./selectors#n-th-element-selector) and [**`visible`**](./selectors#selecting-visible-elements) selector engines
+
+- [`nth`](./selectors#n-th-element-selector) selector engine is equivalent to the `:nth-match` pseudo class, but could be combined with other selector engines.
+- [`visible`](./selectors#selecting-visible-elements) selector engine is equivalent to the `:visible` pseudo class, but could be combined with other selector engines.
+
+```py
+# select the first button among all buttons
+button.click("button >> nth=0")
+# or if you are using locators, you can use first, nth() and last
+page.locator("button").first.click()
+
+# click a visible button
+button.click("button >> visible=true")
+```
+
+### Browser Versions
+
+- Chromium 94.0.4595.0
+- Mozilla Firefox 91.0
+- WebKit 15.0
+
+
 ## Version 1.13
 
 #### Playwright

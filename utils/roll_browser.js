@@ -73,7 +73,7 @@ Example:
   if (descriptor.installByDefault) {
     // 3. Download new browser.
     console.log('\nDownloading new browser...');
-    const registry = new Registry(ROOT_PATH);
+    const registry = new Registry(browsersJSON);
     await registry.install();
 
     // 4. Generate types.
@@ -87,6 +87,19 @@ Example:
       process.stdout.write(execSync('npm run --silent doc'));
     } catch (e) {
     }
+
+    if (browserName === 'chromium') {
+      // 5. Update chromedriver.
+      console.log('\nUpdating chromedriver...');
+      try {
+        process.stdout.write(execSync('npm install --save-dev chromedriver@latest'));
+      } catch (e) {
+      }
+    }
   }
   console.log(`\nRolled ${browserName} to ${revision}`);
-})();
+})().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+

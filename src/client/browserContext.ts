@@ -16,11 +16,12 @@
  */
 
 import { Page, BindingCall } from './page';
+import { Frame } from './frame';
 import * as network from './network';
 import * as channels from '../protocol/channels';
 import fs from 'fs';
 import { ChannelOwner } from './channelOwner';
-import { deprecate, evaluationScript, urlMatches } from './clientHelper';
+import { deprecate, evaluationScript } from './clientHelper';
 import { Browser } from './browser';
 import { Worker } from './worker';
 import { Events } from './events';
@@ -33,21 +34,23 @@ import * as api from '../../types/types';
 import * as structs from '../../types/structs';
 import { CDPSession } from './cdpSession';
 import { Tracing } from './tracing';
+import type { BrowserType } from './browserType';
+import { Artifact } from './artifact';
+import { FetchRequest } from './fetch';
 
 export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel, channels.BrowserContextInitializer> implements api.BrowserContext {
   _pages = new Set<Page>();
-  private _routes: { url: URLMatch, handler: network.RouteHandler }[] = [];
+  private _routes: network.RouteHandler[] = [];
   readonly _browser: Browser | null = null;
+  private _browserType: BrowserType | undefined;
   readonly _bindings = new Map<string, (source: structs.BindingSource, ...args: any[]) => any>();
   _timeoutSettings = new TimeoutSettings();
   _ownerPage: Page | undefined;
   private _closedPromise: Promise<void>;
-  _options: channels.BrowserNewContextParams = {
-    sdkLanguage: 'javascript'
-  };
+  _options: channels.BrowserNewContextParams = { };
 
+  readonly _request: FetchRequest;
   readonly tracing: Tracing;
-
   readonly _backgroundPages = new Set<Page>();
   readonly _serviceWorkers = new Set<Worker>();
   readonly _isChromium: boolean;
@@ -66,6 +69,7 @@ export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel,
       this._browser = parent;
     this._isChromium = this._browser?._name === 'chromium';
     this.tracing = new Tracing(this);
+    this._request = FetchRequest.from(initializer.fetchRequest);
 
     this._channel.on('bindingCall', ({binding}) => this._onBinding(BindingCall.from(binding)));
     this._channel.on('close', () => this._onClose());
@@ -84,9 +88,14 @@ export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel,
     });
     this._channel.on('request', ({ request, page }) => this._onRequest(network.Request.from(request), Page.fromNullable(page)));
     this._channel.on('requestFailed', ({ request, failureText, responseEndTiming, page }) => this._onRequestFailed(network.Request.from(request), responseEndTiming, failureText, Page.fromNullable(page)));
-    this._channel.on('requestFinished', ({ request, responseEndTiming, page }) => this._onRequestFinished(network.Request.from(request), responseEndTiming, Page.fromNullable(page)));
+    this._channel.on('requestFinished', params => this._onRequestFinished(params));
     this._channel.on('response', ({ response, page }) => this._onResponse(network.Response.from(response), Page.fromNullable(page)));
     this._closedPromise = new Promise(f => this.once(Events.BrowserContext.Close, f));
+  }
+
+  _setBrowserType(browserType: BrowserType) {
+    this._browserType = browserType;
+    browserType._contexts.add(this);
   }
 
   private _onPage(page: Page): void {
@@ -117,18 +126,24 @@ export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel,
       page.emit(Events.Page.RequestFailed, request);
   }
 
-  private _onRequestFinished(request: network.Request, responseEndTiming: number, page: Page | null) {
+  private _onRequestFinished(params: channels.BrowserContextRequestFinishedEvent) {
+    const { responseEndTiming } = params;
+    const request = network.Request.from(params.request);
+    const response = network.Response.fromNullable(params.response);
+    const page = Page.fromNullable(params.page);
     if (request._timing)
       request._timing.responseEnd = responseEndTiming;
     this.emit(Events.BrowserContext.RequestFinished, request);
     if (page)
       page.emit(Events.Page.RequestFinished, request);
+    if (response)
+      response._finishedPromise.resolve();
   }
 
   _onRoute(route: network.Route, request: network.Request) {
-    for (const {url, handler} of this._routes) {
-      if (urlMatches(this._options.baseURL, request.url(), url)) {
-        handler(route, request);
+    for (const routeHandler of this._routes) {
+      if (routeHandler.matches(request.url())) {
+        routeHandler.handle(route, request);
         return;
       }
     }
@@ -252,15 +267,15 @@ export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel,
     });
   }
 
-  async route(url: URLMatch, handler: network.RouteHandler): Promise<void> {
+  async route(url: URLMatch, handler: network.RouteHandlerCallback, options: { times?: number } = {}): Promise<void> {
     return this._wrapApiCall(async (channel: channels.BrowserContextChannel) => {
-      this._routes.unshift({ url, handler });
+      this._routes.unshift(new network.RouteHandler(this._options.baseURL, url, handler, options.times));
       if (this._routes.length === 1)
         await channel.setNetworkInterceptionEnabled({ enabled: true });
     });
   }
 
-  async unroute(url: URLMatch, handler?: network.RouteHandler): Promise<void> {
+  async unroute(url: URLMatch, handler?: network.RouteHandlerCallback): Promise<void> {
     return this._wrapApiCall(async (channel: channels.BrowserContextChannel) => {
       this._routes = this._routes.filter(route => route.url !== url || (handler && route.handler !== handler));
       if (this._routes.length === 0)
@@ -301,9 +316,12 @@ export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel,
     return [...this._serviceWorkers];
   }
 
-  async newCDPSession(page: Page): Promise<api.CDPSession> {
+  async newCDPSession(page: Page | Frame): Promise<api.CDPSession> {
+    // channelOwner.ts's validation messages don't handle the pseudo-union type, so we're explicit here
+    if (!(page instanceof Page) && !(page instanceof Frame))
+      throw new Error('page: expected Page or Frame');
     return this._wrapApiCall(async (channel: channels.BrowserContextChannel) => {
-      const result = await channel.newCDPSession({ page: page._channel });
+      const result = await channel.newCDPSession(page instanceof Page ? { page: page._channel } : { frame: page._channel });
       return CDPSession.from(result.session);
     });
   }
@@ -311,12 +329,22 @@ export class BrowserContext extends ChannelOwner<channels.BrowserContextChannel,
   _onClose() {
     if (this._browser)
       this._browser._contexts.delete(this);
+    this._browserType?._contexts?.delete(this);
     this.emit(Events.BrowserContext.Close, this);
   }
 
   async close(): Promise<void> {
     try {
       await this._wrapApiCall(async (channel: channels.BrowserContextChannel) => {
+        await this._browserType?._onWillCloseContext?.(this);
+        if (this._options.recordHar)  {
+          const har = await this._channel.harExport();
+          const artifact = Artifact.from(har.artifact);
+          if (this.browser()?._remoteType)
+            artifact._isRemote = true;
+          await artifact.saveAs(this._options.recordHar.path);
+          await artifact.delete();
+        }
         await channel.close();
         await this._closedPromise;
       });
@@ -346,7 +374,6 @@ export async function prepareBrowserContextParams(options: BrowserContextOptions
   if (options.extraHTTPHeaders)
     network.validateHeaders(options.extraHTTPHeaders);
   const contextParams: channels.BrowserNewContextParams = {
-    sdkLanguage: 'javascript',
     ...options,
     viewport: options.viewport === null ? undefined : options.viewport,
     noDefaultViewport: options.viewport === null,

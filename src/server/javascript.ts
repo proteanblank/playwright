@@ -76,7 +76,7 @@ export class ExecutionContext extends SdkObject {
         ${utilityScriptSource.source}
         return new pwExport();
       })();`;
-      this._utilityScriptPromise = this._delegate.rawEvaluateHandle(source).then(objectId => new JSHandle(this, 'object', objectId));
+      this._utilityScriptPromise = this._delegate.rawEvaluateHandle(source).then(objectId => new JSHandle(this, 'object', undefined, objectId));
     }
     return this._utilityScriptPromise;
   }
@@ -90,7 +90,7 @@ export class ExecutionContext extends SdkObject {
   }
 
   async doSlowMo() {
-    // overrided in FrameExecutionContext
+    // overridden in FrameExecutionContext
   }
 }
 
@@ -103,15 +103,13 @@ export class JSHandle<T = any> extends SdkObject {
   protected _preview: string;
   private _previewCallback: ((preview: string) => void) | undefined;
 
-  constructor(context: ExecutionContext, type: string, objectId?: ObjectId, value?: any) {
+  constructor(context: ExecutionContext, type: string, preview: string | undefined, objectId?: ObjectId, value?: any) {
     super(context, 'handle');
     this._context = context;
     this._objectId = objectId;
     this._value = value;
     this._objectType = type;
-    if (this._objectId)
-      this._value = 'JSHandle@' + this._objectType;
-    this._preview = 'JSHandle@' + String(this._objectId ? this._objectType : this._value);
+    this._preview = this._objectId ? preview || `JSHandle@${this._objectType}` : String(value);
   }
 
   callFunctionNoReply(func: Function, arg: any) {
@@ -174,12 +172,16 @@ export class JSHandle<T = any> extends SdkObject {
       this._context._delegate.releaseHandle(this._objectId).catch(e => {});
   }
 
-  toString(): string {
+  override toString(): string {
     return this._preview;
   }
 
   _setPreviewCallback(callback: (preview: string) => void) {
     this._previewCallback = callback;
+  }
+
+  preview(): string {
+    return this._preview;
   }
 
   _setPreview(preview: string) {
@@ -278,26 +280,10 @@ export function normalizeEvaluationExpression(expression: string, isFunction: bo
   return expression;
 }
 
-export const kSwappedOutErrorMessage = 'Target was swapped out.';
+// Error inside the expression evaluation as opposed to a protocol error.
+export class JavaScriptErrorInEvaluate extends Error {
+}
 
-export function isContextDestroyedError(e: any) {
-  if (!e || typeof e !== 'object' || typeof e.message !== 'string')
-    return false;
-
-  // Evaluating in a context which was already destroyed.
-  if (e.message.includes('Cannot find context with specified id')
-      || e.message.includes('Failed to find execution context with id')
-      || e.message.includes('Missing injected script for given')
-      || e.message.includes('Cannot find object with id'))
-    return true;
-
-  // Evaluation promise is rejected when context is gone.
-  if (e.message.includes('Execution context was destroyed'))
-    return true;
-
-  // WebKit target swap.
-  if (e.message.includes(kSwappedOutErrorMessage))
-    return true;
-
-  return false;
+export function isJavaScriptErrorInEvaluate(error: Error) {
+  return error instanceof JavaScriptErrorInEvaluate;
 }

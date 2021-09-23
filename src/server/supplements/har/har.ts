@@ -55,6 +55,9 @@ export type Entry = {
   timings: Timings;
   serverIPAddress?: string;
   connection?: string;
+  _requestref: string;
+  _frameref: string;
+  _monotonicTime: number;
   _serverPort?: number;
   _securityDetails?: SecurityDetails;
 };
@@ -109,6 +112,7 @@ export type PostData = {
   mimeType: string;
   params: Param[];
   text: string;
+  _sha1?: string;
 };
 
 export type Param = {
@@ -124,6 +128,7 @@ export type Content = {
   mimeType: string;
   text?: string;
   encoding?: string;
+  _sha1?: string;
 };
 
 export type Cache = {

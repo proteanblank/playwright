@@ -536,7 +536,7 @@ export module Protocol {
     /**
      * Pseudo-style identifier (see <code>enum PseudoId</code> in <code>RenderStyleConstants.h</code>).
      */
-    export type PseudoId = "first-line"|"first-letter"|"highlight"|"marker"|"before"|"after"|"selection"|"scrollbar"|"scrollbar-thumb"|"scrollbar-button"|"scrollbar-track"|"scrollbar-track-piece"|"scrollbar-corner"|"resizer";
+    export type PseudoId = "first-line"|"first-letter"|"highlight"|"marker"|"before"|"after"|"selection"|"backdrop"|"scrollbar"|"scrollbar-thumb"|"scrollbar-button"|"scrollbar-track"|"scrollbar-track-piece"|"scrollbar-corner"|"resizer";
     /**
      * CSS rule collection for a single pseudo style.
      */
@@ -1199,7 +1199,7 @@ export module Protocol {
     /**
      * The type of rendering context backing the canvas element.
      */
-    export type ContextType = "canvas-2d"|"bitmaprenderer"|"webgl"|"webgl2"|"webgpu";
+    export type ContextType = "canvas-2d"|"bitmaprenderer"|"webgl"|"webgl2";
     export type ProgramType = "compute"|"render";
     export type ShaderType = "compute"|"fragment"|"vertex";
     /**
@@ -1235,7 +1235,7 @@ export module Protocol {
        */
       failIfMajorPerformanceCaveat?: boolean;
       /**
-       * WebGL, WebGL2, WebGPU
+       * WebGL, WebGL2
        */
       powerPreference?: string;
     }
@@ -1273,16 +1273,12 @@ export module Protocol {
       backtrace?: Console.CallFrame[];
     }
     /**
-     * Information about a WebGL/WebGL2 shader program or WebGPU shader pipeline.
+     * Information about a WebGL/WebGL2 shader program.
      */
     export interface ShaderProgram {
       programId: ProgramId;
       programType: ProgramType;
       canvasId: CanvasId;
-      /**
-       * Indicates whether the vertex and fragment shader modules are the same object for a render shader pipleine for a WebGPU device.
-       */
-      sharesVertexFragmentShader?: boolean;
     }
     
     export type canvasAddedPayload = {
@@ -4686,6 +4682,35 @@ Left=1, Right=2, Middle=4, Back=8, Forward=16, None=0.
     export type dispatchMouseEventReturnValue = {
     }
     /**
+     * Dispatches a wheel event to the page.
+     */
+    export type dispatchWheelEventParameters = {
+      /**
+       * X coordinate of the event relative to the main frame's viewport in CSS pixels.
+       */
+      x: number;
+      /**
+       * Y coordinate of the event relative to the main frame's viewport in CSS pixels. 0 refers to
+the top of the viewport and Y increases as it proceeds towards the bottom of the viewport.
+       */
+      y: number;
+      /**
+       * Bit field representing pressed modifier keys. Alt=1, Ctrl=2, Meta/Command=4, Shift=8
+(default: 0).
+       */
+      modifiers?: number;
+      /**
+       * X delta in CSS pixels for mouse wheel event (default: 0).
+       */
+      deltaX?: number;
+      /**
+       * Y delta in CSS pixels for mouse wheel event (default: 0).
+       */
+      deltaY?: number;
+    }
+    export type dispatchWheelEventReturnValue = {
+    }
+    /**
      * Dispatches a tap event to the page.
      */
     export type dispatchTapEventParameters = {
@@ -5924,6 +5949,21 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     export type interceptWithResponseReturnValue = {
     }
     /**
+     * Fail response with given error type.
+     */
+    export type interceptResponseWithErrorParameters = {
+      /**
+       * Identifier for the intercepted Network response to fail.
+       */
+      requestId: RequestId;
+      /**
+       * Deliver error reason for the request failure.
+       */
+      errorType: ResourceErrorType;
+    }
+    export type interceptResponseWithErrorReturnValue = {
+    }
+    /**
      * Provide response for an intercepted request. Request completely bypasses the network in this case and is immediately fulfilled with the provided data.
      */
     export type interceptRequestWithResponseParameters = {
@@ -6476,6 +6516,17 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     export type overrideUserAgentReturnValue = {
     }
     /**
+     * Override's the navigator.platform of the inspected page
+     */
+    export type overridePlatformParameters = {
+      /**
+       * Value to override the platform with. If this value is not provided, the override is removed. Overrides are removed when Web Inspector closes/disconnects.
+       */
+      value?: string;
+    }
+    export type overridePlatformReturnValue = {
+    }
+    /**
      * Allows the frontend to override the inspected page's settings.
      */
     export type overrideSettingParameters = {
@@ -6861,6 +6912,13 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
       unobscuredInsets?: Insets;
     }
     export type setVisibleContentRectsReturnValue = {
+    }
+    /**
+     * Ensures that the scroll regions are up to date.
+     */
+    export type updateScrollingStateParameters = {
+    }
+    export type updateScrollingStateReturnValue = {
     }
   }
   
@@ -8940,6 +8998,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "IndexedDB.clearObjectStore": IndexedDB.clearObjectStoreParameters;
     "Input.dispatchKeyEvent": Input.dispatchKeyEventParameters;
     "Input.dispatchMouseEvent": Input.dispatchMouseEventParameters;
+    "Input.dispatchWheelEvent": Input.dispatchWheelEventParameters;
     "Input.dispatchTapEvent": Input.dispatchTapEventParameters;
     "Inspector.enable": Inspector.enableParameters;
     "Inspector.disable": Inspector.disableParameters;
@@ -8967,6 +9026,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "Network.interceptContinue": Network.interceptContinueParameters;
     "Network.interceptWithRequest": Network.interceptWithRequestParameters;
     "Network.interceptWithResponse": Network.interceptWithResponseParameters;
+    "Network.interceptResponseWithError": Network.interceptResponseWithErrorParameters;
     "Network.interceptRequestWithResponse": Network.interceptRequestWithResponseParameters;
     "Network.interceptRequestWithError": Network.interceptRequestWithErrorParameters;
     "Network.setEmulateOfflineState": Network.setEmulateOfflineStateParameters;
@@ -8977,6 +9037,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "Page.goForward": Page.goForwardParameters;
     "Page.navigate": Page.navigateParameters;
     "Page.overrideUserAgent": Page.overrideUserAgentParameters;
+    "Page.overridePlatform": Page.overridePlatformParameters;
     "Page.overrideSetting": Page.overrideSettingParameters;
     "Page.getCookies": Page.getCookiesParameters;
     "Page.setCookie": Page.setCookieParameters;
@@ -9006,6 +9067,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "Page.crash": Page.crashParameters;
     "Page.setOrientationOverride": Page.setOrientationOverrideParameters;
     "Page.setVisibleContentRects": Page.setVisibleContentRectsParameters;
+    "Page.updateScrollingState": Page.updateScrollingStateParameters;
     "Playwright.enable": Playwright.enableParameters;
     "Playwright.disable": Playwright.disableParameters;
     "Playwright.close": Playwright.closeParameters;
@@ -9237,6 +9299,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "IndexedDB.clearObjectStore": IndexedDB.clearObjectStoreReturnValue;
     "Input.dispatchKeyEvent": Input.dispatchKeyEventReturnValue;
     "Input.dispatchMouseEvent": Input.dispatchMouseEventReturnValue;
+    "Input.dispatchWheelEvent": Input.dispatchWheelEventReturnValue;
     "Input.dispatchTapEvent": Input.dispatchTapEventReturnValue;
     "Inspector.enable": Inspector.enableReturnValue;
     "Inspector.disable": Inspector.disableReturnValue;
@@ -9264,6 +9327,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "Network.interceptContinue": Network.interceptContinueReturnValue;
     "Network.interceptWithRequest": Network.interceptWithRequestReturnValue;
     "Network.interceptWithResponse": Network.interceptWithResponseReturnValue;
+    "Network.interceptResponseWithError": Network.interceptResponseWithErrorReturnValue;
     "Network.interceptRequestWithResponse": Network.interceptRequestWithResponseReturnValue;
     "Network.interceptRequestWithError": Network.interceptRequestWithErrorReturnValue;
     "Network.setEmulateOfflineState": Network.setEmulateOfflineStateReturnValue;
@@ -9274,6 +9338,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "Page.goForward": Page.goForwardReturnValue;
     "Page.navigate": Page.navigateReturnValue;
     "Page.overrideUserAgent": Page.overrideUserAgentReturnValue;
+    "Page.overridePlatform": Page.overridePlatformReturnValue;
     "Page.overrideSetting": Page.overrideSettingReturnValue;
     "Page.getCookies": Page.getCookiesReturnValue;
     "Page.setCookie": Page.setCookieReturnValue;
@@ -9303,6 +9368,7 @@ the top of the viewport and Y increases as it proceeds towards the bottom of the
     "Page.crash": Page.crashReturnValue;
     "Page.setOrientationOverride": Page.setOrientationOverrideReturnValue;
     "Page.setVisibleContentRects": Page.setVisibleContentRectsReturnValue;
+    "Page.updateScrollingState": Page.updateScrollingStateReturnValue;
     "Playwright.enable": Playwright.enableReturnValue;
     "Playwright.disable": Playwright.disableReturnValue;
     "Playwright.close": Playwright.closeReturnValue;

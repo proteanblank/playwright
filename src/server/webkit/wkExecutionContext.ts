@@ -19,6 +19,7 @@ import { WKSession } from './wkConnection';
 import { Protocol } from './protocol';
 import * as js from '../javascript';
 import { parseEvaluationResultValue } from '../common/utilityScriptSerializers';
+import { isSessionClosedError } from '../common/protocolError';
 
 export class WKExecutionContext implements js.ExecutionContextDelegate {
   private readonly _session: WKSession;
@@ -46,7 +47,7 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
         returnByValue: true
       });
       if (response.wasThrown)
-        throw new Error('Evaluation failed: ' + response.result.description);
+        throw new js.JavaScriptErrorInEvaluate(response.result.description);
       return response.result.value;
     } catch (error) {
       throw rewriteError(error);
@@ -61,7 +62,7 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
         returnByValue: false
       });
       if (response.wasThrown)
-        throw new Error('Evaluation failed: ' + response.result.description);
+        throw new js.JavaScriptErrorInEvaluate(response.result.description);
       return response.result.objectId!;
     } catch (error) {
       throw rewriteError(error);
@@ -81,7 +82,7 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
   async evaluateWithArguments(expression: string, returnByValue: boolean, utilityScript: js.JSHandle<any>, values: any[], objectIds: string[]): Promise<any> {
     try {
       const response = await Promise.race([
-        this._executionContextDestroyedPromise.then(() => contextDestroyedResult),
+        this._executionContextDestroyedPromise.then(() => { throw new Error(contextDestroyedError); }),
         this._session.send('Runtime.callFunctionOn', {
           functionDeclaration: expression,
           objectId: utilityScript._objectId!,
@@ -96,7 +97,7 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
         })
       ]);
       if (response.wasThrown)
-        throw new Error('Evaluation failed: ' + response.result.description);
+        throw new js.JavaScriptErrorInEvaluate(response.result.description);
       if (returnByValue)
         return parseEvaluationResultValue(response.result.value);
       return utilityScript._context.createHandle(response.result);
@@ -121,7 +122,7 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
 
   createHandle(context: js.ExecutionContext, remoteObject: Protocol.Runtime.RemoteObject): js.JSHandle {
     const isPromise = remoteObject.className === 'Promise';
-    return new js.JSHandle(context, isPromise ? 'promise' : remoteObject.subtype || remoteObject.type, remoteObject.objectId, potentiallyUnserializableValue(remoteObject));
+    return new js.JSHandle(context, isPromise ? 'promise' : remoteObject.subtype || remoteObject.type, renderPreview(remoteObject), remoteObject.objectId, potentiallyUnserializableValue(remoteObject));
   }
 
   async releaseHandle(objectId: js.ObjectId): Promise<void> {
@@ -129,12 +130,7 @@ export class WKExecutionContext implements js.ExecutionContextDelegate {
   }
 }
 
-const contextDestroyedResult = {
-  wasThrown: true,
-  result: {
-    description: 'Protocol error: Execution context was destroyed, most likely because of a navigation.'
-  } as Protocol.Runtime.RemoteObject
-};
+const contextDestroyedError = 'Execution context was destroyed.';
 
 function potentiallyUnserializableValue(remoteObject: Protocol.Runtime.RemoteObject): any {
   const value = remoteObject.value;
@@ -143,7 +139,28 @@ function potentiallyUnserializableValue(remoteObject: Protocol.Runtime.RemoteObj
 }
 
 function rewriteError(error: Error): Error {
-  if (js.isContextDestroyedError(error))
+  if (!js.isJavaScriptErrorInEvaluate(error) && !isSessionClosedError(error))
     return new Error('Execution context was destroyed, most likely because of a navigation.');
   return error;
+}
+
+function renderPreview(object: Protocol.Runtime.RemoteObject): string | undefined {
+  if (object.type === 'undefined')
+    return 'undefined';
+  if ('value' in object)
+    return String(object.value);
+
+  if (object.description === 'Object' && object.preview) {
+    const tokens = [];
+    for (const { name, value } of object.preview.properties!)
+      tokens.push(`${name}: ${value}`);
+    return `{${tokens.join(', ')}}`;
+  }
+  if (object.subtype === 'array' && object.preview) {
+    const result = [];
+    for (const { name, value } of object.preview.properties!)
+      result[+name] = value;
+    return '[' + String(result) + ']';
+  }
+  return object.description;
 }

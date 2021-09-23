@@ -40,7 +40,7 @@ These options would be typically different between local development and CI oper
 - `quiet: boolean` - Whether to suppress stdout and stderr from the tests.
 - `reporter: 'list' | 'line' | 'dot' | 'json' | 'junit'` - The reporter to use. See [reporters](./test-reporters.md) for details.
 - `reportSlowTests: { max: number, threshold: number } | null` - Whether to report slow tests. When `null`, slow tests are not reported. Otherwise, tests that took more than `threshold` milliseconds are reported as slow, but no more than `max` number of them. Passing zero as `max` reports all slow tests that exceed the threshold.
-- `shard: { total: number, current: number } | null` - [Shard](./test-parallel.md#shards) information.
+- `shard: { total: number, current: number } | null` - [Shard](./test-parallel.md#shard-tests-between-multiple-machines) information.
 - `updateSnapshots: boolean` - Whether to update expected snapshots with the actual results produced by the test run.
 - `workers: number` - The maximum number of concurrent worker processes to use for parallelizing tests.
 - `webServer: { command: string, port: number, timeout?: number, reuseExistingServer?: boolean, cwd?: string, env?: object }` - Launch a process and wait that it's ready before the tests will start. See [launch web server](#launching-a-development-web-server-during-the-tests) configuration for examples.
@@ -235,14 +235,14 @@ const config = {
     reuseExistingServer: !process.env.CI,
   },
 };
-mode.exports = config;
+module.exports = config;
 ```
 
 Now you can use a relative path when navigating the page, or use `baseURL` fixture:
 
 ```js js-flavor=ts
 // test.spec.ts
-import { test } = from '@playwright/test';
+import { test } from '@playwright/test';
 test('test', async ({ page, baseURL }) => {
   // baseURL is taken directly from your web server,
   // e.g. http://localhost:3000
@@ -270,50 +270,49 @@ test('test', async ({ page, baseURL }) => {
 
 ## Global setup and teardown
 
-To set something up once before running all tests, use `globalSetup` option in the [configuration file](#configuration-object).
+To set something up once before running all tests, use `globalSetup` option in the [configuration file](#configuration-object). Global setup file must export a single function that takes a config object. This function will be run once before all the tests.
 
 Similarly, use `globalTeardown` to run something once after all the tests. Alternatively, let `globalSetup` return a function that will be used as a global teardown. You can pass data such as port number, authentication tokens, etc. from your global setup to your tests using environment.
 
-Here is a global setup example that runs an app.
+Here is a global setup example that authenticates once and reuses authentication state in tests. It uses `baseURL` and `storageState` options from the configuration file.
+
 ```js js-flavor=js
 // global-setup.js
-const app = require('./my-app');
+const { chromium } = require('@playwright/test');
 
-module.exports = async () => {
-  const server = require('http').createServer(app);
-  await new Promise(done => server.listen(done));
-
-  // Expose port to the tests.
-  process.env.SERVER_PORT = String(server.address().port);
-
-  // Return the teardown function.
-  return async () => {
-    await new Promise(done => server.close(done));
-  };
+module.exports = async config => {
+  const { baseURL, storageState } = config.projects[0].use;
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto(baseURL);
+  await page.fill('input[name="user"]', 'user');
+  await page.fill('input[name="password"]', 'password');
+  await page.click('text=Sign in');
+  await page.context().storageState({ path: storageState });
+  await browser.close();
 };
 ```
 
 ```js js-flavor=ts
 // global-setup.ts
-import app from './my-app';
-import * as http from 'http';
+import { chromium, FullConfig } from '@playwright/test';
 
-async function globalSetup() {
-  const server = http.createServer(app);
-  await new Promise(done => server.listen(done));
-
-  // Expose port to the tests.
-  process.env.SERVER_PORT = String(server.address().port);
-
-  // Return the teardown function.
-  return async () => {
-    await new Promise(done => server.close(done));
-  };
+async function globalSetup(config: FullConfig) {
+  const { baseURL, storageState } = config.projects[0].use;
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto(baseURL!);
+  await page.fill('input[name="user"]', 'user');
+  await page.fill('input[name="password"]', 'password');
+  await page.click('text=Sign in');
+  await page.context().storageState({ path: storageState as string });
+  await browser.close();
 }
+
 export default globalSetup;
 ```
 
-Now add `globalSetup` option to the configuration file.
+Specify `globalSetup`, `baseURL` and `storageState` in the configuration file.
 
 ```js js-flavor=js
 // playwright.config.js
@@ -321,6 +320,10 @@ Now add `globalSetup` option to the configuration file.
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
 const config = {
   globalSetup: require.resolve('./global-setup'),
+  use: {
+    baseURL: 'http://localhost:3000/',
+    storageState: 'state.json',
+  },
 };
 module.exports = config;
 ```
@@ -331,27 +334,31 @@ import { PlaywrightTestConfig } from '@playwright/test';
 
 const config: PlaywrightTestConfig = {
   globalSetup: require.resolve('./global-setup'),
+  use: {
+    baseURL: 'http://localhost:3000/',
+    storageState: 'state.json',
+  },
 };
 export default config;
 ```
 
-Tests will now run after the global setup is done and will have access to the data created in the global setup:
+Tests start already authenticated because we specify `storageState` that was populated by global setup.
 
-```js js-flavor=js
-// test.spec.js
-const { test } = require('@playwright/test');
+```js js-flavor=ts
+import { test } from '@playwright/test';
 
-test('test', async ({ }) => {
-  console.log(process.env.SERVER_PORT);
+test('test', async ({ page }) => {
+  await page.goto('/');
+  // You are signed in!
 });
 ```
 
-```js js-flavor=ts
-// test.spec.ts
-import { test } = from '@playwright/test';
+```js js-flavor=js
+const { test } = require('@playwright/test');
 
-test('test', async ({ }) => {
-  console.log(process.env.SERVER_PORT);
+test('test', async ({ page }) => {
+  await page.goto('/');
+  // You are signed in!
 });
 ```
 

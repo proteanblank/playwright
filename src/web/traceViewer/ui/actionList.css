@@ -64,6 +64,11 @@
   text-overflow: ellipsis;
 }
 
+.action-duration {
+  margin-left: 4px;
+  color: var(--gray);
+}
+
 .action-icon {
   flex: none;
   display: flex;
@@ -106,7 +111,11 @@
   color: var(--blue);
 }
 
-.action-entry .codicon-error {
+.action-entry .codicon {
+  padding: 0 2px;
+}
+
+.action-entry .codicon-error, .action-entry .codicon-issues {
   color: red;
 }
 

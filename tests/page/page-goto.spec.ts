@@ -58,6 +58,16 @@ it('should work cross-process', async ({page, server}) => {
   expect(response.url()).toBe(url);
 });
 
+it('should work with Cross-Origin-Opener-Policy', async ({page, server, browserName}) => {
+  it.fail(browserName === 'webkit', 'Regressed in https://trac.webkit.org/changeset/281516/webkit');
+  server.setRoute('/empty.html', (req, res) => {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.end();
+  });
+  await page.goto(server.EMPTY_PAGE);
+  expect(page.url()).toBe(server.EMPTY_PAGE);
+});
+
 it('should capture iframe navigation request', async ({page, server}) => {
   await page.goto(server.EMPTY_PAGE);
   expect(page.url()).toBe(server.EMPTY_PAGE);
@@ -476,8 +486,9 @@ it('should fail when canceled by another navigation', async ({page, server}) => 
   expect(error.message).toBeTruthy();
 });
 
-it('should work with lazy loading iframes', async ({page, server, isElectron}) => {
+it('should work with lazy loading iframes', async ({page, server, isElectron, isAndroid}) => {
   it.fixme(isElectron);
+  it.fixme(isAndroid);
 
   await page.goto(server.PREFIX + '/frames/lazy-frame.html');
   expect(page.frames().length).toBe(2);
@@ -524,4 +535,22 @@ it('should not crash when RTCPeerConnection is used', async ({ page, server, bro
       iceServers: []
     });
   });
+});
+
+it('should properly wait for load', async ({page, server, browserName}) => {
+  it.fixme(browserName === 'webkit', 'WebKit has a bug where Page.frameStoppedLoading is sent too early.');
+  server.setRoute('/slow.js', async (req, res) => {
+    await new Promise(x => setTimeout(x, 100));
+    res.writeHead(200, {'Content-Type': 'application/javascript'});
+    res.end(`window.results.push('slow module');export const foo = 'slow';`);
+  });
+  await page.goto(server.PREFIX + '/load-event/load-event.html');
+  const results = await page.evaluate('window.results');
+  expect(results).toEqual([
+    'script tag after after module',
+    'slow module',
+    'module',
+    'DOMContentLoaded',
+    'load'
+  ]);
 });

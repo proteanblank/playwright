@@ -14,13 +14,11 @@
  * limitations under the License.
  */
 
-import { formatLocation, wrapInPromise } from './util';
+import { formatLocation, wrapInPromise, debugTest } from './util';
 import * as crypto from 'crypto';
-import { FixturesWithLocation, Location, WorkerInfo, TestInfo } from './types';
+import { FixturesWithLocation, Location, WorkerInfo, TestInfo, TestStepInternal } from './types';
 
-type FixtureScope = 'test' | 'worker' | 'file';
-const scopeOrder: FixtureScope[] = ['worker', 'file', 'test'];
-
+type FixtureScope = 'test' | 'worker';
 type FixtureRegistration = {
   location: Location;
   name: string;
@@ -49,7 +47,7 @@ class Fixture {
     this.value = null;
   }
 
-  async setup(info: any) {
+  async setup(workerInfo: WorkerInfo, testInfo: TestInfo | undefined) {
     if (typeof this.registration.fn !== 'function') {
       this._setup = true;
       this.value = this.registration.fn;
@@ -59,7 +57,7 @@ class Fixture {
     const params: { [key: string]: any } = {};
     for (const name of this.registration.deps) {
       const registration = this.runner.pool!.resolveDependency(this.registration, name)!;
-      const dep = await this.runner.setupFixtureForRegistration(registration, info);
+      const dep = await this.runner.setupFixtureForRegistration(registration, workerInfo, testInfo);
       dep.usages.add(this);
       params[name] = dep.value;
     }
@@ -69,6 +67,7 @@ class Fixture {
     let called = false;
     const setupFence = new Promise<void>((f, r) => { setupFenceFulfill = f; setupFenceReject = r; });
     const teardownFence = new Promise(f => this._teardownFenceCallback = f);
+    debugTest(`setup ${this.registration.name}`);
     this._tearDownComplete = wrapInPromise(this.registration.fn(params, async (value: any) => {
       if (called)
         throw new Error(`Cannot provide fixture value for the second time`);
@@ -76,7 +75,7 @@ class Fixture {
       this.value = value;
       setupFenceFulfill();
       return await teardownFence;
-    }, info)).catch((e: any) => {
+    }, this.registration.scope === 'worker' ? workerInfo : testInfo)).catch((e: any) => {
       if (!this._setup)
         setupFenceReject(e);
       else
@@ -96,6 +95,7 @@ class Fixture {
       await fixture.teardown();
     this.usages.clear();
     if (this._setup) {
+      debugTest(`teardown ${this.registration.name}`);
       this._teardownFenceCallback();
       await this._tearDownComplete;
     }
@@ -104,10 +104,10 @@ class Fixture {
 }
 
 export class FixturePool {
-  readonly digest: { worker: string, file: string };
+  readonly digest: string;
   readonly registrations: Map<string, FixtureRegistration>;
 
-  constructor(fixturesList: FixturesWithLocation[], parentPool?: FixturePool) {
+  constructor(fixturesList: FixturesWithLocation[], parentPool?: FixturePool, disallowWorkerFixtures?: boolean) {
     this.registrations = new Map(parentPool ? parentPool.registrations : []);
 
     for (const { fixtures, location } of fixturesList) {
@@ -136,8 +136,10 @@ export class FixturePool {
           options = { auto: false, scope: 'test' };
         }
 
-        if (options.scope !== 'test' && options.scope !== 'worker' && options.scope !== 'file')
+        if (options.scope !== 'test' && options.scope !== 'worker')
           throw errorWithLocations(`Fixture "${name}" has unknown { scope: '${options.scope}' }.`, { location, name });
+        if (options.scope === 'worker' && disallowWorkerFixtures)
+          throw errorWithLocations(`Cannot use({ ${name} }) in a describe group, because it forces a new worker.\nMake it top-level in the test file or put in the configuration file.`, { location, name });
 
         const deps = fixtureParameterNames(fn, location);
         const registration: FixtureRegistration = { id: '', name, location, scope: options.scope, fn, auto: options.auto, deps, super: previous };
@@ -163,8 +165,8 @@ export class FixturePool {
           else
             throw errorWithLocations(`Fixture "${registration.name}" has unknown parameter "${name}".`, registration);
         }
-        if (scopeOrder.indexOf(registration.scope) < scopeOrder.indexOf(dep.scope))
-          throw errorWithLocations(`${registration.scope} fixture "${registration.name}" cannot depend on a ${dep.scope} fixture "${name}".`, registration, dep);
+        if (registration.scope === 'worker' && dep.scope === 'test')
+          throw errorWithLocations(`Worker fixture "${registration.name}" cannot depend on a test fixture "${name}".`, registration, dep);
         if (!markers.has(dep)) {
           visit(dep);
         } else if (markers.get(dep) === 'visiting') {
@@ -178,21 +180,18 @@ export class FixturePool {
       stack.pop();
     };
 
-    const hashWorker = crypto.createHash('sha1');
-    const hashFile = crypto.createHash('sha1');
+    const hash = crypto.createHash('sha1');
     const names = Array.from(this.registrations.keys()).sort();
     for (const name of names) {
       const registration = this.registrations.get(name)!;
       visit(registration);
       if (registration.scope === 'worker')
-        hashWorker.update(registration.id + ';');
-      else if (registration.scope === 'file')
-        hashFile.update(registration.id + ';');
+        hash.update(registration.id + ';');
     }
-    return { worker: hashWorker.digest('hex'), file: hashFile.digest('hex') };
+    return hash.digest('hex');
   }
 
-  validateFunction(fn: Function, prefix: string, allowTestFixtures: boolean, location: Location) {
+  validateFunction(fn: Function, prefix: string, location: Location) {
     const visit = (registration: FixtureRegistration) => {
       for (const name of registration.deps)
         visit(this.resolveDependency(registration, name)!);
@@ -201,8 +200,6 @@ export class FixturePool {
       const registration = this.registrations.get(name);
       if (!registration)
         throw errorWithLocations(`${prefix} has unknown parameter "${name}".`, { location, name: prefix, quoted: false });
-      if (!allowTestFixtures && registration.scope === 'test')
-        throw errorWithLocations(`${prefix} cannot depend on a test fixture "${name}".`, { location, name: prefix, quoted: false }, registration);
       visit(registration);
     }
   }
@@ -222,26 +219,37 @@ export class FixtureRunner {
   setPool(pool: FixturePool) {
     if (!this.testScopeClean)
       throw new Error('Did not teardown test scope');
-    if (this.pool && pool.digest.worker !== this.pool.digest.worker)
+    if (this.pool && pool.digest !== this.pool.digest)
       throw new Error('Digests do not match');
     this.pool = pool;
   }
 
-  async teardownScope(scope: string) {
-    for (const [, fixture] of this.instanceForId) {
-      if (fixture.registration.scope === scope)
-        await fixture.teardown();
+  async teardownScope(scope: FixtureScope) {
+    let error: Error | undefined;
+    // Teardown fixtures in the reverse order.
+    const fixtures = Array.from(this.instanceForId.values()).reverse();
+    for (const fixture of fixtures) {
+      if (fixture.registration.scope === scope) {
+        try {
+          await fixture.teardown();
+        } catch (e) {
+          if (error === undefined)
+            error = e;
+        }
+      }
     }
     if (scope === 'test')
       this.testScopeClean = true;
+    if (error !== undefined)
+      throw error;
   }
 
-  async resolveParametersAndRunHookOrTest(fn: Function, scope: FixtureScope, info: WorkerInfo|TestInfo) {
+  async resolveParametersAndRunHookOrTest(fn: Function, workerInfo: WorkerInfo, testInfo: TestInfo | undefined, paramsStepCallback?: TestStepInternal) {
     // Install all automatic fixtures.
     for (const registration of this.pool!.registrations.values()) {
-      const shouldRun = scopeOrder.indexOf(registration.scope) <= scopeOrder.indexOf(scope);
-      if (registration.auto && shouldRun)
-        await this.setupFixtureForRegistration(registration, info);
+      const shouldSkip = !testInfo && registration.scope === 'test';
+      if (registration.auto && !shouldSkip)
+        await this.setupFixtureForRegistration(registration, workerInfo, testInfo);
     }
 
     // Install used fixtures.
@@ -249,14 +257,17 @@ export class FixtureRunner {
     const params: { [key: string]: any } = {};
     for (const name of names) {
       const registration = this.pool!.registrations.get(name)!;
-      const fixture = await this.setupFixtureForRegistration(registration, info);
+      const fixture = await this.setupFixtureForRegistration(registration, workerInfo, testInfo);
       params[name] = fixture.value;
     }
 
-    return fn(params, info);
+    // Report fixture hooks step as completed.
+    paramsStepCallback?.complete();
+
+    return fn(params, testInfo || workerInfo);
   }
 
-  async setupFixtureForRegistration(registration: FixtureRegistration, info: any): Promise<Fixture> {
+  async setupFixtureForRegistration(registration: FixtureRegistration, workerInfo: WorkerInfo, testInfo: TestInfo | undefined): Promise<Fixture> {
     if (registration.scope === 'test')
       this.testScopeClean = false;
 
@@ -266,7 +277,7 @@ export class FixtureRunner {
 
     fixture = new Fixture(this, registration);
     this.instanceForId.set(registration.id, fixture);
-    await fixture.setup(info);
+    await fixture.setup(workerInfo, testInfo);
     return fixture;
   }
 

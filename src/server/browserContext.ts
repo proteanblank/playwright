@@ -31,9 +31,10 @@ import path from 'path';
 import { CallMetadata, internalCallMetadata, createInstrumentation, SdkObject } from './instrumentation';
 import { Debugger } from './supplements/debugger';
 import { Tracing } from './trace/recorder/tracing';
-import { HarTracer } from './supplements/har/harTracer';
+import { HarRecorder } from './supplements/har/harRecorder';
 import { RecorderSupplement } from './supplements/recorderSupplement';
 import * as consoleApiSource from '../generated/consoleApiSource';
+import { BrowserContextFetchRequest } from './fetch';
 
 export abstract class BrowserContext extends SdkObject {
   static Events = {
@@ -61,8 +62,9 @@ export abstract class BrowserContext extends SdkObject {
   readonly _browserContextId: string | undefined;
   private _selectors?: Selectors;
   private _origins = new Set<string>();
-  private _harTracer: HarTracer | undefined;
+  readonly _harRecorder: HarRecorder | undefined;
   readonly tracing: Tracing;
+  readonly fetchRequest: BrowserContextFetchRequest;
 
   constructor(browser: Browser, options: types.BrowserContextOptions, browserContextId: string | undefined) {
     super(browser, 'browser-context');
@@ -74,8 +76,10 @@ export abstract class BrowserContext extends SdkObject {
     this._closePromise = new Promise(fulfill => this._closePromiseFulfill = fulfill);
 
     if (this._options.recordHar)
-      this._harTracer = new HarTracer(this, this._options.recordHar);
+      this._harRecorder = new HarRecorder(this, {...this._options.recordHar, path: path.join(this._browser.options.artifactsDir, `${createGuid()}.har`)});
+
     this.tracing = new Tracing(this);
+    this.fetchRequest = new BrowserContextFetchRequest(this);
   }
 
   _setSelectors(selectors: Selectors) {
@@ -108,7 +112,7 @@ export abstract class BrowserContext extends SdkObject {
     });
 
     if (debugMode() === 'console')
-      await this.extendInjectedScript('main', consoleApiSource.source);
+      await this.extendInjectedScript(consoleApiSource.source);
   }
 
   async _ensureVideosPath() {
@@ -166,16 +170,15 @@ export abstract class BrowserContext extends SdkObject {
     return this._doSetHTTPCredentials(httpCredentials);
   }
 
-  async exposeBinding(name: string, needsHandle: boolean, playwrightBinding: frames.FunctionWithSource, world: types.World): Promise<void> {
-    const identifier = PageBinding.identifier(name, world);
-    if (this._pageBindings.has(identifier))
+  async exposeBinding(name: string, needsHandle: boolean, playwrightBinding: frames.FunctionWithSource): Promise<void> {
+    if (this._pageBindings.has(name))
       throw new Error(`Function "${name}" has been already registered`);
     for (const page of this.pages()) {
-      if (page.getBinding(name, world))
+      if (page.getBinding(name))
         throw new Error(`Function "${name}" has been already registered in one of the pages`);
     }
-    const binding = new PageBinding(name, playwrightBinding, needsHandle, world);
-    this._pageBindings.set(identifier, binding);
+    const binding = new PageBinding(name, playwrightBinding, needsHandle);
+    this._pageBindings.set(name, binding);
     await this._doExposeBinding(binding);
   }
 
@@ -272,7 +275,7 @@ export abstract class BrowserContext extends SdkObject {
       this.emit(BrowserContext.Events.BeforeClose);
       this._closedStatus = 'closing';
 
-      await this._harTracer?.flush();
+      await this._harRecorder?.flush();
       await this.tracing.dispose();
 
       // Cleanup.
@@ -371,8 +374,8 @@ export abstract class BrowserContext extends SdkObject {
     }
   }
 
-  async extendInjectedScript(world: types.World, source: string, arg?: any) {
-    const installInFrame = (frame: frames.Frame) => frame.extendInjectedScript(world, source, arg).catch(() => {});
+  async extendInjectedScript(source: string, arg?: any) {
+    const installInFrame = (frame: frames.Frame) => frame.extendInjectedScript(source, arg).catch(() => {});
     const installInPage = (page: Page) => {
       page.on(Page.Events.InternalFrameNavigatedToNewDocument, installInFrame);
       return Promise.all(page.frames().map(installInFrame));

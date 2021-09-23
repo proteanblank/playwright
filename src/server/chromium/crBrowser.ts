@@ -20,6 +20,7 @@ import { assertBrowserContextIsNotOwned, BrowserContext, validateBrowserContextO
 import { assert } from '../../utils/utils';
 import * as network from '../network';
 import { Page, PageBinding, PageDelegate, Worker } from '../page';
+import { Frame } from '../frames';
 import { ConnectionTransport } from '../transport';
 import * as types from '../types';
 import { ConnectionEvents, CRConnection, CRSession } from './crConnection';
@@ -44,6 +45,7 @@ export class CRBrowser extends Browser {
   private _tracingRecording = false;
   private _tracingPath: string | null = '';
   private _tracingClient: CRSession | undefined;
+  private _userAgent: string = '';
 
   static async connect(transport: ConnectionTransport, options: BrowserOptions, devtools?: CRDevTools): Promise<CRBrowser> {
     const connection = new CRConnection(transport, options.protocolLogger, options.browserLogsCollector);
@@ -56,6 +58,7 @@ export class CRBrowser extends Browser {
     const version = await session.send('Browser.getVersion');
     browser._isMac = version.userAgent.includes('Macintosh');
     browser._version = version.product.substring(version.product.indexOf('/') + 1);
+    browser._userAgent = version.userAgent;
     if (!options.persistent) {
       await session.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
       return browser;
@@ -104,6 +107,10 @@ export class CRBrowser extends Browser {
 
   version(): string {
     return this._version;
+  }
+
+  userAgent(): string {
+    return this._userAgent;
   }
 
   isClank(): boolean {
@@ -307,7 +314,7 @@ export class CRBrowserContext extends BrowserContext {
     this._authenticateProxyViaCredentials();
   }
 
-  async _initialize() {
+  override async _initialize() {
     assert(!Array.from(this._browser._crPages.values()).some(page => page._browserContext === this));
     const promises: Promise<any>[] = [ super._initialize() ];
     if (this._browser.options.name !== 'electron' && this._browser.options.name !== 'clank') {
@@ -361,7 +368,7 @@ export class CRBrowserContext extends BrowserContext {
   async _doCookies(urls: string[]): Promise<types.NetworkCookie[]> {
     const { cookies } = await this._browser._session.send('Storage.getCookies', { browserContextId: this._browserContextId });
     return network.filterCookies(cookies.map(c => {
-      const copy: any = { sameSite: 'None', ...c };
+      const copy: any = { sameSite: 'Lax', ...c };
       delete copy.size;
       delete copy.priority;
       delete copy.session;
@@ -503,10 +510,18 @@ export class CRBrowserContext extends BrowserContext {
     return Array.from(this._browser._serviceWorkers.values()).filter(serviceWorker => serviceWorker._browserContext === this);
   }
 
-  async newCDPSession(page: Page): Promise<CRSession> {
-    if (!(page instanceof Page))
-      throw new Error('page: expected Page');
-    const targetId = (page._delegate as CRPage)._targetId;
+  async newCDPSession(page: Page | Frame): Promise<CRSession> {
+    let targetId: string | null = null;
+    if (page instanceof Page) {
+      targetId = (page._delegate as CRPage)._targetId;
+    } else if (page instanceof Frame) {
+      const session = (page._page._delegate as CRPage)._sessions.get(page._id);
+      if (!session) throw new Error(`This frame does not have a separate CDP session, it is a part of the parent frame's session`);
+      targetId = session._targetId;
+    } else {
+      throw new Error('page: expected Page or Frame');
+    }
+
     const rootSession = await this._browser._clientRootSession();
     const { sessionId } = await rootSession.send('Target.attachToTarget', { targetId, flatten: true });
     return this._browser._connection.session(sessionId)!;

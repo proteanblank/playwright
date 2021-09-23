@@ -18,7 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { FullConfig, FullResult, Reporter, Suite, TestCase } from '../../../types/testReporter';
 import { monotonicTime } from '../util';
-import { formatFailure, formatTestTitle, stripAscii } from './base';
+import { formatFailure, formatTestTitle, stripAnsiEscapes } from './base';
 
 class JUnitReporter implements Reporter {
   private config!: FullConfig;
@@ -142,24 +142,31 @@ class JUnitReporter implements Reporter {
           message: `${path.basename(test.location.file)}:${test.location.line}:${test.location.column} ${test.title}`,
           type: 'FAILURE',
         },
-        text: stripAscii(formatFailure(this.config, test))
+        text: stripAnsiEscapes(formatFailure(this.config, test))
       });
     }
-    for (const result of test.results) {
-      for (const stdout of result.stdout) {
-        entries.push({
-          name: 'system-out',
-          text: stdout.toString()
-        });
-      }
 
-      for (const stderr of result.stderr) {
-        entries.push({
-          name: 'system-err',
-          text: stderr.toString()
-        });
+    const systemOut: string[] = [];
+    const systemErr: string[] = [];
+    for (const result of test.results) {
+      systemOut.push(...result.stdout.map(item => item.toString()));
+      systemErr.push(...result.stderr.map(item => item.toString()));
+      for (const attachment of result.attachments) {
+        if (!attachment.path)
+          continue;
+        try {
+          if (fs.existsSync(attachment.path))
+            systemOut.push(`\n[[ATTACHMENT|${path.relative(this.config.rootDir, attachment.path)}]]\n`);
+        } catch (e) {
+        }
       }
     }
+    // Note: it is important to only produce a single system-out/system-err entry
+    // so that parsers in the wild understand it.
+    if (systemOut.length)
+      entry.children.push({ name: 'system-out', text: systemOut.join('') });
+    if (systemErr.length)
+      entry.children.push({ name: 'system-err', text: systemErr.join('') });
   }
 }
 

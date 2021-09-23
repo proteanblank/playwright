@@ -28,8 +28,8 @@ import { kPageProxyMessageReceived, PageProxyMessageReceivedPayload, WKConnectio
 import { WKPage } from './wkPage';
 import { kBrowserClosedError } from '../../utils/errors';
 
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.2 Safari/605.1.15';
-const BROWSER_VERSION = '14.2';
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15';
+const BROWSER_VERSION = '15.0';
 
 export class WKBrowser extends Browser {
   private readonly _connection: WKConnection;
@@ -101,6 +101,10 @@ export class WKBrowser extends Browser {
     return BROWSER_VERSION;
   }
 
+  userAgent(): string {
+    return DEFAULT_USER_AGENT;
+  }
+
   _onDownloadCreated(payload: Protocol.Playwright.downloadCreatedPayload) {
     const page = this._wkPages.get(payload.pageProxyId);
     if (!page)
@@ -153,7 +157,7 @@ export class WKBrowser extends Browser {
       context = this._defaultContext as WKBrowserContext;
     if (!context)
       return;
-    const pageProxySession = new WKSession(this._connection, pageProxyId, `The page has been closed.`, (message: any) => {
+    const pageProxySession = new WKSession(this._connection, pageProxyId, `Target closed`, (message: any) => {
       this._connection.rawSend({ ...message, pageProxyId });
     });
     const opener = event.openerId ? this._wkPages.get(event.openerId) : undefined;
@@ -207,7 +211,7 @@ export class WKBrowserContext extends BrowserContext {
     this._authenticateProxyViaHeader();
   }
 
-  async _initialize() {
+  override async _initialize() {
     assert(!this._wkPages().length);
     const browserContextId = this._browserContextId;
     const promises: Promise<any>[] = [ super._initialize() ];
@@ -304,7 +308,7 @@ export class WKBrowserContext extends BrowserContext {
   async _doAddInitScript(source: string) {
     this._evaluateOnNewDocumentSources.push(source);
     for (const page of this.pages())
-      await (page._delegate as WKPage)._updateBootstrapScript('main');
+      await (page._delegate as WKPage)._updateBootstrapScript();
   }
 
   async _doExposeBinding(binding: PageBinding) {

@@ -7,7 +7,6 @@
  */
 
 import type * as expect from 'expect';
-import type { ExpectedAssertionsErrors } from 'expect/build/types';
 
 export declare type AsymmetricMatcher = Record<string, any>;
 
@@ -17,7 +16,7 @@ export declare type Expect = {
   // Sourced from node_modules/expect/build/types.d.ts
   assertions(arg0: number): void;
   extend(arg0: any): void;
-  extractExpectedAssertionsErrors: () => ExpectedAssertionsErrors;
+  extractExpectedAssertionsErrors: typeof expect['extractExpectedAssertionsErrors'];
   getState(): expect.MatcherState;
   hasAssertions(): void;
   setState(state: Partial<expect.MatcherState>): void;
@@ -29,7 +28,7 @@ export declare type Expect = {
   stringMatching(expected: string | RegExp): AsymmetricMatcher;
 };
 
-type OverriddenExpectProperties = 
+type OverriddenExpectProperties =
 'not' |
 'resolves' |
 'rejects' |
@@ -110,11 +109,6 @@ declare global {
       toBeVisible(options?: { timeout?: number }): Promise<R>;
 
       /**
-       * Asserts given select option is selected
-       */
-      toBeSelected(options?: { timeout?: number }): Promise<R>;
-
-      /**
        * Asserts element's text content matches given pattern or contains given substring.
        */
       toContainText(expected: string, options?: { timeout?: number, useInnerText?: boolean }): Promise<R>;
@@ -122,12 +116,12 @@ declare global {
       /**
        * Asserts element's attributes `name` matches expected value.
        */
-      toHaveAttr(expected: string | RegExp, name: string, options?: { timeout?: number }): Promise<R>;
+      toHaveAttribute(name: string, expected: string | RegExp, options?: { timeout?: number }): Promise<R>;
 
       /**
        * Asserts that DOM node has a given CSS class.
        */
-      toHaveClass(className: string | RegExp | string[], options?: { timeout?: number }): Promise<R>;
+      toHaveClass(className: string | RegExp | (string|RegExp)[], options?: { timeout?: number }): Promise<R>;
 
       /**
        * Asserts number of DOM nodes matching given locator.
@@ -137,12 +131,7 @@ declare global {
       /**
        * Asserts element's computed CSS property `name` matches expected value.
        */
-      toHaveCSS(expected: string | RegExp, name: string, options?: { timeout?: number }): Promise<R>;
-
-      /**
-       * Asserts element's data attribute data-`name` matches expected value.
-       */
-      toHaveData(expected: string | RegExp, name: string, options?: { timeout?: number }): Promise<R>;
+      toHaveCSS(name: string, expected: string | RegExp, options?: { timeout?: number }): Promise<R>;
 
       /**
        * Asserts element's `id` attribute matches expected value.
@@ -152,12 +141,12 @@ declare global {
       /**
        * Asserts JavaScript object that corresponds to the Node has a property with given value.
        */
-      toHaveProp(name: string, value: any, options?: { timeout?: number }): Promise<R>;
+      toHaveJSProperty(name: string, value: any, options?: { timeout?: number }): Promise<R>;
 
       /**
        * Asserts element's text content.
        */
-      toHaveText(expected: string | RegExp | string[], options?: { timeout?: number, useInnerText?: boolean }): Promise<R>;
+      toHaveText(expected: string | RegExp | (string|RegExp)[], options?: { timeout?: number, useInnerText?: boolean }): Promise<R>;
 
       /**
        * Asserts page's title.
@@ -165,7 +154,7 @@ declare global {
       toHaveTitle(expected: string | RegExp, options?: { timeout?: number }): Promise<R>;
 
       /**
-       * Asserts page's title.
+       * Asserts page's URL.
        */
       toHaveURL(expected: string | RegExp, options?: { timeout?: number }): Promise<R>;
 

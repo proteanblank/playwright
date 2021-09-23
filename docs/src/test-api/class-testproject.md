@@ -106,6 +106,7 @@ export default config;
 
 ## property: TestProject.expect
 - type: <[Object]>
+  - `timeout` <[float]> Default timeout for async expect matchers in milliseconds, defaults to 5000ms.
   - `toMatchSnapshot` <[Object]>
     - `threshold` <[float]> Image matching threshold between zero (strict) and one (lax).
 
@@ -158,7 +159,7 @@ The number of times to repeat each test, useful for debugging flaky tests.
 ## property: TestProject.retries
 - type: <[int]>
 
-The maximum number of retry attempts given to failed tests. Learn more about [test retries](./test-retries.md).
+The maximum number of retry attempts given to failed tests. Learn more about [test retries](./test-retries.md#retries).
 
 ## property: TestProject.testDir
 - type: <[string]>
@@ -276,7 +277,7 @@ This is a base timeout for all tests. In addition, each test can configure its o
 ## property: TestProject.use
 - type: <[Fixtures]>
 
-Additional fixtures for this project. Most useful for specifying options, for example [`property: Fixtures.browserName`]. Learn more about [Fixtures] and [configuration](./test-configuration.md).
+Options for all tests in this project, for example [`property: TestOptions.browserName`]. Learn more about [configuration](./test-configuration.md) and see [available options][TestOptions].
 
 ```js js-flavor=js
 // playwright.config.js

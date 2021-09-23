@@ -318,6 +318,8 @@ function renderMember(member, parent, options, out) {
         out.push(...XmlDoc.renderXmlDoc(member.spec, maxDocumentationColumnWidth));
       if (!member.clazz)
         out.push(`${member.required ? '[Required]\n' : ''}[JsonPropertyName("${jsonName}")]`)
+      if (member.deprecated)
+        out.push(`[System.Obsolete]`);
       if (!type.endsWith('?') && !member.required)
         type = `${type}?`;
       const requiredSuffix = type.endsWith('?') ? '' : ' = default!;';
@@ -568,7 +570,7 @@ function renderMethod(member, parent, name, options, out) {
 
     if (arg.name === 'options') {
       if (options.mode === 'options' || options.mode === 'base') {
-        const optionsType = member.clazz.name + name + 'Options';
+        const optionsType = member.clazz.name + name.replace('<T>', '') + 'Options';
         optionTypes.set(optionsType, arg.type);
         args.push(`${optionsType}? options = default`);
         argTypeMap.set(`${optionsType}? options = default`, 'options');
@@ -678,6 +680,8 @@ function renderMethod(member, parent, name, options, out) {
       out.push(...XmlDoc.renderXmlDoc(member.spec, maxDocumentationColumnWidth));
       paramDocs.forEach((value, i) => printArgDoc(i, value, out));
     }
+    if(member.deprecated)
+      out.push(`[System.Obsolete]`);
     out.push(`${modifiers}${type} ${toAsync(name, member.async)}(${args.join(', ')})${body}`);
   } else {
     let containsOptionalExplodedArgs = false;

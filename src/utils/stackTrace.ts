@@ -21,33 +21,23 @@ import { isUnderTest } from './utils';
 
 const stackUtils = new StackUtils();
 
-export function rewriteErrorMessage(e: Error, newMessage: string): Error {
-  if (e.stack) {
-    const index = e.stack.indexOf(e.message);
-    if (index !== -1)
-      e.stack = e.stack.substring(0, index) + newMessage + e.stack.substring(index + e.message.length);
-  }
+export function rewriteErrorMessage<E extends Error>(e: E, newMessage: string): E {
+  const lines: string[] = (e.stack?.split('\n') || []).filter(l => l.startsWith('    at '));
   e.message = newMessage;
+  const errorTitle = `${e.name}: ${e.message}`;
+  if (lines.length)
+    e.stack = `${errorTitle}\n${lines.join('\n')}`;
   return e;
 }
 
-const PW_LIB_DIRS = [
-  'playwright',
-  'playwright-chromium',
-  'playwright-firefox',
-  'playwright-webkit',
-  path.join('@playwright', 'test'),
-].map(packageName => path.sep + packageName);
-
-const runnerNpmPkgLib = path.join('@playwright', 'test', 'lib', 'test');
-const runnerLib = path.join('lib', 'test');
-const runnerSrc = path.join('src', 'test');
-
-function includesFileInPlaywrightSubDir(subDir: string, fileName: string) {
-  return PW_LIB_DIRS.map(p => path.join(p, subDir)).some(libDir => fileName.includes(libDir));
-}
+const ROOT_DIR = path.resolve(__dirname, '..', '..');
+const CLIENT_LIB = path.join(ROOT_DIR, 'lib', 'client');
+const CLIENT_SRC = path.join(ROOT_DIR, 'src', 'client');
+const TEST_LIB = path.join(ROOT_DIR, 'lib', 'test');
+const TEST_SRC = path.join(ROOT_DIR, 'src', 'test');
 
 export type ParsedStackTrace = {
+  allFrames: StackFrame[];
   frames: StackFrame[];
   frameTexts: string[];
   apiName: string;
@@ -59,44 +49,63 @@ export function captureStackTrace(): ParsedStackTrace {
   const error = new Error();
   const stack = error.stack!;
   Error.stackTraceLimit = stackTraceLimit;
-  const frames: StackFrame[] = [];
-  const frameTexts: string[] = [];
-  const lines = stack.split('\n').reverse();
-  let apiName = '';
 
-  const isTesting = !!process.env.PWTEST_CLI_ALLOW_TEST_COMMAND || isUnderTest();
-
-  for (const line of lines) {
+  const isTesting = isUnderTest();
+  type ParsedFrame = {
+    frame: StackFrame;
+    frameText: string;
+    inClient: boolean;
+  };
+  let parsedFrames = stack.split('\n').map(line => {
     const frame = stackUtils.parseLine(line);
     if (!frame || !frame.file)
-      continue;
+      return null;
     if (frame.file.startsWith('internal'))
-      continue;
+      return null;
+    if (frame.file.includes(path.join('node_modules', 'expect')))
+      return null;
     const fileName = path.resolve(process.cwd(), frame.file);
     if (isTesting && fileName.includes(path.join('playwright', 'tests', 'config', 'coverage.js')))
-      continue;
-    if (isFilePartOfPlaywright(isTesting, fileName)) {
+      return null;
+    const inClient =
+      // Allow fixtures in the reported stacks.
+      (!fileName.includes('test/index') && !fileName.includes('test\\index')) && (
+        fileName.startsWith(CLIENT_LIB)
+        || fileName.startsWith(CLIENT_SRC)
+        || fileName.startsWith(TEST_LIB)
+        || fileName.startsWith(TEST_SRC));
+    const parsed: ParsedFrame = {
+      frame: {
+        file: fileName,
+        line: frame.line,
+        column: frame.column,
+        function: frame.function,
+      },
+      frameText: line,
+      inClient
+    };
+    return parsed;
+  }).filter(Boolean) as ParsedFrame[];
+
+  let apiName = '';
+  // Deepest transition between non-client code calling into client code
+  // is the api entry.
+  const allFrames = parsedFrames;
+  for (let i = 0; i < parsedFrames.length - 1; i++) {
+    if (parsedFrames[i].inClient && !parsedFrames[i + 1].inClient) {
+      const frame = parsedFrames[i].frame;
       apiName = frame.function ? frame.function[0].toLowerCase() + frame.function.slice(1) : '';
+      parsedFrames = parsedFrames.slice(i + 1);
       break;
     }
-    frameTexts.push(line);
-    frames.push({
-      file: fileName,
-      line: frame.line,
-      column: frame.column,
-      function: frame.function,
-    });
   }
-  frames.reverse();
-  frameTexts.reverse();
-  return { frames, frameTexts, apiName };
-}
 
-function isFilePartOfPlaywright(isTesting: boolean, fileName: string): boolean {
-  const isPlaywrightTest = fileName.includes(runnerNpmPkgLib);
-  const isLocalPlaywright = isTesting && (fileName.includes(runnerSrc) || fileName.includes(runnerLib));
-  const isInPlaywright = (includesFileInPlaywrightSubDir('src', fileName) || includesFileInPlaywrightSubDir('lib', fileName));
-  return !isPlaywrightTest && !isLocalPlaywright && isInPlaywright;
+  return {
+    allFrames: allFrames.map(p => p.frame),
+    frames: parsedFrames.map(p => p.frame),
+    frameTexts: parsedFrames.map(p => p.frameText),
+    apiName
+  };
 }
 
 export function splitErrorMessage(message: string): { name: string, message: string } {

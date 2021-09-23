@@ -15,17 +15,29 @@
  */
 
 import path from 'path';
-import type { Browser, Page } from '../../index';
+import type { Browser, Locator, Page } from '../../index';
 import { showTraceViewer } from '../../lib/server/trace/viewer/traceViewer';
-import { playwrightTest } from '../config/browserTest';
-import { expect } from '../config/test-runner';
+import { playwrightTest, expect } from '../config/browserTest';
 
 class TraceViewerPage {
-  constructor(public page: Page) {}
+  actionTitles: Locator;
+  callLines: Locator;
+  consoleLines: Locator;
+  consoleLineMessages: Locator;
+  consoleStacks: Locator;
+  stackFrames: Locator;
+  networkRequests: Locator;
+  snapshotContainer: Locator;
 
-  async actionTitles() {
-    await this.page.waitForSelector('.action-title:visible');
-    return await this.page.$$eval('.action-title:visible', ee => ee.map(e => e.textContent));
+  constructor(public page: Page) {
+    this.actionTitles = page.locator('.action-title');
+    this.callLines = page.locator('.call-line');
+    this.consoleLines = page.locator('.console-line');
+    this.consoleLineMessages = page.locator('.console-line-message');
+    this.consoleStacks = page.locator('.console-stack');
+    this.stackFrames = page.locator('.stack-trace-frame');
+    this.networkRequests = page.locator('.network-request-title');
+    this.snapshotContainer = page.locator('.snapshot-container');
   }
 
   async actionIconsText(action: string) {
@@ -42,10 +54,20 @@ class TraceViewerPage {
     await this.page.click(`.action-title:has-text("${title}")`);
   }
 
+  async selectSnapshot(name: string) {
+    await this.page.click(`.snapshot-tab .tab-label:has-text("${name}")`);
+  }
 
-  async callLines() {
-    await this.page.waitForSelector('.call-line:visible');
-    return await this.page.$$eval('.call-line:visible', ee => ee.map(e => e.textContent));
+  async showConsoleTab() {
+    await this.page.click('text="Console"');
+  }
+
+  async showSourceTab() {
+    await this.page.click('text="Source"');
+  }
+
+  async showNetworkTab() {
+    await this.page.click('text="Network"');
   }
 
   async eventBars() {
@@ -58,21 +80,6 @@ class TraceViewerPage {
     }
     const result = [...set];
     return result.sort();
-  }
-
-  async consoleLines() {
-    await this.page.waitForSelector('.console-line-message:visible');
-    return await this.page.$$eval('.console-line-message:visible', ee => ee.map(e => e.textContent));
-  }
-
-  async consoleLineTypes() {
-    await this.page.waitForSelector('.console-line-message:visible');
-    return await this.page.$$eval('.console-line:visible', ee => ee.map(e => e.className));
-  }
-
-  async consoleStacks() {
-    await this.page.waitForSelector('.console-stack:visible');
-    return await this.page.$$eval('.console-stack:visible', ee => ee.map(e => e.textContent));
   }
 }
 
@@ -92,7 +99,7 @@ const test = playwrightTest.extend<{ showTraceViewer: (trace: string) => Promise
 
 let traceFile: string;
 
-test.beforeAll(async ({ browser, browserName }, workerInfo) => {
+test.beforeAll(async function recordTrace({ browser, browserName, browserType, server }, workerInfo) {
   const context = await browser.newContext();
   await context.tracing.start({ name: 'test', screenshots: true, snapshots: true });
   const page = await context.newPage();
@@ -102,17 +109,36 @@ test.beforeAll(async ({ browser, browserName }, workerInfo) => {
     console.log('Info');
     console.warn('Warning');
     console.error('Error');
-    setTimeout(() => { throw new Error('Unhandled exception'); }, 0);
-    return 'return ' + a;
+    return new Promise(f => {
+      // Generate exception.
+      setTimeout(() => {
+        // And then resolve.
+        setTimeout(() => f('return ' + a), 0);
+        throw new Error('Unhandled exception');
+      }, 0);
+    });
   }, { a: 'paramA', b: 4 });
-  await page.click('"Click"');
+
+  async function doClick() {
+    await page.click('"Click"');
+  }
+  await doClick();
+
   await Promise.all([
     page.waitForNavigation(),
-    page.waitForTimeout(200).then(() => page.goto('data:text/html,<html>Hello world 2</html>'))
+    page.waitForTimeout(200).then(() => page.goto(server.PREFIX + '/frames/frame.html'))
   ]);
-  await page.close();
-  traceFile = path.join(workerInfo.project.outputDir, browserName, 'trace.zip');
-  await context.tracing.stop({ path: traceFile });
+  await page.setViewportSize({ width: 500, height: 600 });
+
+  // Go through instrumentation to exercise reentrant stack traces.
+  (browserType as any)._onWillCloseContext = async () => {
+    await page.hover('body');
+    await page.close();
+    traceFile = path.join(workerInfo.project.outputDir, String(workerInfo.workerIndex), browserName, 'trace.zip');
+    await context.tracing.stop({ path: traceFile });
+  };
+  await context.close();
+  (browserType as any)._onWillCloseContext = undefined;
 });
 
 test('should show empty trace viewer', async ({ showTraceViewer }, testInfo) => {
@@ -122,20 +148,23 @@ test('should show empty trace viewer', async ({ showTraceViewer }, testInfo) => 
 
 test('should open simple trace viewer', async ({ showTraceViewer }) => {
   const traceViewer = await showTraceViewer(traceFile);
-  expect(await traceViewer.actionTitles()).toEqual([
-    'page.gotodata:text/html,<html>Hello world</html>',
-    'page.setContent',
-    'page.evaluate',
-    'page.click\"Click\"',
-    'page.waitForNavigation',
-    'page.gotodata:text/html,<html>Hello world 2</html>',
+  await expect(traceViewer.actionTitles).toHaveText([
+    /page.gotodata:text\/html,<html>Hello world<\/html>— \d+ms/,
+    /page.setContent— \d+ms/,
+    /page.evaluate— \d+ms/,
+    /page.click"Click"— \d+ms/,
+    /page.waitForNavigation— \d+ms/,
+    /page.waitForTimeout— \d+ms/,
+    /page.gotohttp:\/\/localhost:\d+\/frames\/frame.html— \d+ms/,
+    /page.setViewportSize— \d+ms/,
+    /page.hoverbody— \d+ms/,
   ]);
 });
 
 test('should contain action info', async ({ showTraceViewer }) => {
   const traceViewer = await showTraceViewer(traceFile);
   await traceViewer.selectAction('page.click');
-  const logLines = await traceViewer.callLines();
+  const logLines = await traceViewer.callLines.allTextContents();
   expect(logLines.length).toBeGreaterThan(10);
   expect(logLines).toContain('attempting click action');
   expect(logLines).toContain('  click action done');
@@ -151,34 +180,71 @@ test('should render console', async ({ showTraceViewer, browserName }) => {
   test.fixme(browserName === 'firefox', 'Firefox generates stray console message for page error');
   const traceViewer = await showTraceViewer(traceFile);
   await traceViewer.selectAction('page.evaluate');
-  await traceViewer.page.click('"Console"');
+  await traceViewer.showConsoleTab();
 
-  const events = await traceViewer.consoleLines();
-  expect(events).toEqual(['Info', 'Warning', 'Error', 'Unhandled exception']);
-  const types = await traceViewer.consoleLineTypes();
-  expect(types).toEqual(['console-line log', 'console-line warning', 'console-line error', 'console-line error']);
-  const stacks = await traceViewer.consoleStacks();
-  expect(stacks.length).toBe(1);
-  expect(stacks[0]).toContain('Error: Unhandled exception');
+  await expect(traceViewer.consoleLineMessages).toHaveText(['Info', 'Warning', 'Error', 'Unhandled exception']);
+  await expect(traceViewer.consoleLines).toHaveClass(['console-line log', 'console-line warning', 'console-line error', 'console-line error']);
+  await expect(traceViewer.consoleStacks.first()).toContainText('Error: Unhandled exception');
 });
 
 test('should open console errors on click', async ({ showTraceViewer, browserName }) => {
   test.fixme(browserName === 'firefox', 'Firefox generates stray console message for page error');
   const traceViewer = await showTraceViewer(traceFile);
   expect(await traceViewer.actionIconsText('page.evaluate')).toEqual(['2', '1']);
-  expect(await traceViewer.page.isHidden('.console-tab'));
+  expect(await traceViewer.page.isHidden('.console-tab')).toBeTruthy();
   await (await traceViewer.actionIcons('page.evaluate')).click();
-  expect(await traceViewer.page.waitForSelector('.console-tab'));
+  expect(await traceViewer.page.waitForSelector('.console-tab')).toBeTruthy();
 });
 
 test('should show params and return value', async ({ showTraceViewer, browserName }) => {
   const traceViewer = await showTraceViewer(traceFile);
-  expect(await traceViewer.selectAction('page.evaluate'));
-  expect(await traceViewer.callLines()).toEqual([
-    'page.evaluate',
+  await traceViewer.selectAction('page.evaluate');
+  await expect(traceViewer.callLines).toHaveText([
+    /page.evaluate — \d+ms/,
     'expression: "({↵    a↵  }) => {↵    console.log(\'Info\');↵    console.warn(\'Warning\');↵    con…"',
     'isFunction: true',
     'arg: {"a":"paramA","b":4}',
     'value: "return paramA"'
+  ]);
+});
+
+test('should have correct snapshot size', async ({ showTraceViewer }, testInfo) => {
+  const traceViewer = await showTraceViewer(traceFile);
+  await traceViewer.selectAction('page.setViewport');
+  await traceViewer.selectSnapshot('Before');
+  await expect(traceViewer.snapshotContainer).toHaveCSS('width', '1280px');
+  await expect(traceViewer.snapshotContainer).toHaveCSS('height', '720px');
+  await traceViewer.selectSnapshot('After');
+  await expect(traceViewer.snapshotContainer).toHaveCSS('width', '500px');
+  await expect(traceViewer.snapshotContainer).toHaveCSS('height', '600px');
+});
+
+test('should have correct stack trace', async ({ showTraceViewer }) => {
+  const traceViewer = await showTraceViewer(traceFile);
+
+  await traceViewer.selectAction('page.click');
+  await traceViewer.showSourceTab();
+  const stack1 = (await traceViewer.stackFrames.allInnerTexts()).map(s => s.replace(/\s+/g, ' ').replace(/:[0-9]+/g, ':XXX'));
+  expect(stack1.slice(0, 2)).toEqual([
+    'doClick trace-viewer.spec.ts :XXX',
+    'recordTrace trace-viewer.spec.ts :XXX',
+  ]);
+
+  await traceViewer.selectAction('page.hover');
+  await traceViewer.showSourceTab();
+  const stack2 = (await traceViewer.stackFrames.allInnerTexts()).map(s => s.replace(/\s+/g, ' ').replace(/:[0-9]+/g, ':XXX'));
+  expect(stack2.slice(0, 1)).toEqual([
+    'BrowserType.browserType._onWillCloseContext trace-viewer.spec.ts :XXX',
+  ]);
+});
+
+test('should have network requests', async ({ showTraceViewer }) => {
+  const traceViewer = await showTraceViewer(traceFile);
+  await traceViewer.selectAction('http://localhost');
+  await traceViewer.showNetworkTab();
+  await expect(traceViewer.networkRequests).toHaveText([
+    '200GETframe.htmltext/html',
+    '200GETstyle.csstext/css',
+    '200GETscript.jsapplication/javascript',
   ]);
 });

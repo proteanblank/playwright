@@ -169,6 +169,8 @@ class TargetRegistry {
         throw new Error(`Internal error: cannot find context for userContextId=${userContextId}`);
       const target = new PageTarget(this, window, tab, browserContext, openerTarget);
       target.updateUserAgent();
+      target.updatePlatform();
+      target.updateJavaScriptDisabled();
       target.updateTouchOverride();
       target.updateColorSchemeOverride();
       target.updateReducedMotionOverride();
@@ -403,6 +405,14 @@ class PageTarget {
 
   updateUserAgent() {
     this._linkedBrowser.browsingContext.customUserAgent = this._browserContext.defaultUserAgent;
+  }
+
+  updatePlatform() {
+    this._linkedBrowser.browsingContext.customPlatform = this._browserContext.defaultPlatform;
+  }
+
+  updateJavaScriptDisabled() {
+    this._linkedBrowser.browsingContext.allowJavascript = !this._browserContext.javaScriptDisabled;
   }
 
   _updateModalDialogs() {
@@ -690,6 +700,8 @@ class BrowserContext {
     this.defaultViewportSize = undefined;
     this.deviceScaleFactor = undefined;
     this.defaultUserAgent = null;
+    this.defaultPlatform = null;
+    this.javaScriptDisabled = false;
     this.touchOverride = false;
     this.colorScheme = 'none';
     this.forcedColors = 'no-override';
@@ -761,10 +773,22 @@ class BrowserContext {
     }
   }
 
-  async setDefaultUserAgent(userAgent) {
+  setDefaultUserAgent(userAgent) {
     this.defaultUserAgent = userAgent;
     for (const page of this.pages)
       page.updateUserAgent();
+  }
+
+  setDefaultPlatform(platform) {
+    this.defaultPlatform = platform;
+    for (const page of this.pages)
+      page.updatePlatform();
+  }
+
+  setJavaScriptDisabled(javaScriptDisabled) {
+    this.javaScriptDisabled = javaScriptDisabled;
+    for (const page of this.pages)
+      page.updateJavaScriptDisabled();
   }
 
   setTouchOverride(touchOverride) {
@@ -905,11 +929,13 @@ class BrowserContext {
 
   async setVideoRecordingOptions(options) {
     this.videoRecordingOptions = options;
-    if (!options)
-      return;
     const promises = [];
-    for (const page of this.pages)
-      promises.push(page._startVideoRecording(options));
+    for (const page of this.pages) {
+      if (options)
+        promises.push(page._startVideoRecording(options));
+      else if (page._videoRecordingInfo)
+        promises.push(page._stopVideoRecording());
+    }
     await Promise.all(promises);
   }
 }

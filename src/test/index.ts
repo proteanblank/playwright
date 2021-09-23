@@ -14,30 +14,62 @@
  * limitations under the License.
  */
 
-import expectLibrary from 'expect';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-import type { LaunchOptions, BrowserContextOptions, Page, BrowserContext } from '../../types/types';
-import type { TestType, PlaywrightTestArgs, PlaywrightTestOptions, PlaywrightWorkerArgs, PlaywrightWorkerOptions } from '../../types/test';
+import type { LaunchOptions, BrowserContextOptions, Page, BrowserContext, BrowserType } from '../../types/types';
+import type { TestType, PlaywrightTestArgs, PlaywrightTestOptions, PlaywrightWorkerArgs, PlaywrightWorkerOptions, TestInfo } from '../../types/test';
 import { rootTestType } from './testType';
 import { createGuid, removeFolders } from '../utils/utils';
+import { GridClient } from '../grid/gridClient';
 export { expect } from './expect';
 export const _baseTest: TestType<{}, {}> = rootTestType.test;
 
-const artifactsFolder = path.join(os.tmpdir(), 'pwt-' + createGuid());
+type TestFixtures = PlaywrightTestArgs & PlaywrightTestOptions & {
+  _combinedContextOptions: BrowserContextOptions,
+  _setupContextOptionsAndArtifacts: void;
+};
+type WorkerAndFileFixtures = PlaywrightWorkerArgs & PlaywrightWorkerOptions & {
+  _browserType: BrowserType;
+  _artifactsDir: () => string,
+};
 
-export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions, PlaywrightWorkerArgs & PlaywrightWorkerOptions>({
+export const test = _baseTest.extend<TestFixtures, WorkerAndFileFixtures>({
   defaultBrowserType: [ 'chromium', { scope: 'worker' } ],
   browserName: [ ({ defaultBrowserType }, use) => use(defaultBrowserType), { scope: 'worker' } ],
-  playwright: [ require('../inprocess'), { scope: 'worker' } ],
+  playwright: [async ({}, use, workerInfo) => {
+    if (process.env.PW_GRID) {
+      const gridClient = await GridClient.connect(process.env.PW_GRID);
+      await use(gridClient.playwright() as any);
+      await gridClient.close();
+    } else {
+      await use(require('../inprocess'));
+    }
+  }, { scope: 'worker' } ],
   headless: [ undefined, { scope: 'worker' } ],
   channel: [ undefined, { scope: 'worker' } ],
   launchOptions: [ {}, { scope: 'worker' } ],
+  screenshot: [ 'off', { scope: 'worker' } ],
+  video: [ 'off', { scope: 'worker' } ],
+  trace: [ 'off', { scope: 'worker' } ],
 
-  browser: [ async ({ playwright, browserName, headless, channel, launchOptions }, use) => {
+  _artifactsDir: [async ({}, use, workerInfo) => {
+    let dir: string | undefined;
+    await use(() => {
+      if (!dir) {
+        dir = path.join(workerInfo.project.outputDir, '.playwright-artifacts-' + workerInfo.workerIndex);
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      return dir;
+    });
+    if (dir)
+      await removeFolders([dir]);
+  }, { scope: 'worker' }],
+
+  _browserType: [async ({ playwright, browserName, headless, channel, launchOptions }, use) => {
     if (!['chromium', 'firefox', 'webkit'].includes(browserName))
       throw new Error(`Unexpected browserName "${browserName}", must be one of "chromium", "firefox" or "webkit"`);
+    const browserType = playwright[browserName];
+
     const options: LaunchOptions = {
       handleSIGINT: false,
       timeout: 0,
@@ -47,15 +79,18 @@ export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions,
       options.headless = headless;
     if (channel !== undefined)
       options.channel = channel;
-    const browser = await playwright[browserName].launch(options);
+
+    (browserType as any)._defaultLaunchOptions = options;
+    await use(browserType);
+    (browserType as any)._defaultLaunchOptions = undefined;
+  }, { scope: 'worker' }],
+
+  browser: [ async ({ _browserType }, use) => {
+    const browser = await _browserType.launch();
     await use(browser);
     await browser.close();
-    await removeFolders([artifactsFolder]);
   }, { scope: 'worker' } ],
 
-  screenshot: 'off',
-  video: 'off',
-  trace: 'off',
   acceptDownloads: undefined,
   bypassCSP: undefined,
   colorScheme: undefined,
@@ -82,11 +117,7 @@ export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions,
   },
   contextOptions: {},
 
-  createContext: async ({
-    browser,
-    screenshot,
-    trace,
-    video,
+  _combinedContextOptions: async ({
     acceptDownloads,
     bypassCSP,
     colorScheme,
@@ -108,22 +139,7 @@ export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions,
     userAgent,
     baseURL,
     contextOptions,
-    actionTimeout,
-    navigationTimeout
-  }, use, testInfo) => {
-    testInfo.snapshotSuffix = process.platform;
-    if (process.env.PWDEBUG)
-      testInfo.setTimeout(0);
-
-    let videoMode = typeof video === 'string' ? video : video.mode;
-    if (videoMode === 'retry-with-video')
-      videoMode = 'on-first-retry';
-    if (trace === 'retry-with-trace')
-      trace = 'on-first-retry';
-
-    const captureVideo = (videoMode === 'on' || videoMode === 'retain-on-failure' || (videoMode === 'on-first-retry' && testInfo.retry === 1));
-    const captureTrace = (trace === 'on' || trace === 'retain-on-failure' || (trace === 'on-first-retry' && testInfo.retry === 1));
-
+  }, use) => {
     const options: BrowserContextOptions = {};
     if (acceptDownloads !== undefined)
       options.acceptDownloads = acceptDownloads;
@@ -165,74 +181,160 @@ export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions,
       options.viewport = viewport;
     if (baseURL !== undefined)
       options.baseURL = baseURL;
+    await use({
+      ...contextOptions,
+      ...options,
+    });
+  },
 
-    const allContexts: BrowserContext[] = [];
-    const allPages: Page[] = [];
+  _setupContextOptionsAndArtifacts: [async ({ _browserType, _combinedContextOptions, _artifactsDir, trace, screenshot, actionTimeout, navigationTimeout }, use, testInfo) => {
+    testInfo.snapshotSuffix = process.platform;
+    if (process.env.PWDEBUG)
+      testInfo.setTimeout(0);
 
-    await use(async (additionalOptions = {}) => {
-      let recordVideoDir: string | null = null;
-      const recordVideoSize = typeof video === 'string' ? undefined : video.size;
-      if (captureVideo) {
-        await fs.promises.mkdir(artifactsFolder, { recursive: true });
-        recordVideoDir = artifactsFolder;
-      }
+    if (trace === 'retry-with-trace')
+      trace = 'on-first-retry';
+    const captureTrace = (trace === 'on' || trace === 'retain-on-failure' || (trace === 'on-first-retry' && testInfo.retry === 1));
+    const temporaryTraceFiles: string[] = [];
+    const temporaryScreenshots: string[] = [];
 
-      const combinedOptions: BrowserContextOptions = {
-        recordVideo: recordVideoDir ? { dir: recordVideoDir, size: recordVideoSize } : undefined,
-        ...contextOptions,
-        ...options,
-        ...additionalOptions,
-      };
-      const context = await browser.newContext(combinedOptions);
-      (context as any)._csi = {
-        onApiCall: (name: string) => {
-          return (testInfo as any)._addStep('pw:api', name);
-        },
-      };
+    const onDidCreateContext = async (context: BrowserContext) => {
       context.setDefaultTimeout(actionTimeout || 0);
       context.setDefaultNavigationTimeout(navigationTimeout || actionTimeout || 0);
-      expectLibrary.setState({ playwrightActionTimeout: actionTimeout } as any);
-      context.on('page', page => allPages.push(page));
-
       if (captureTrace) {
-        const name = path.relative(testInfo.project.outputDir, testInfo.outputDir).replace(/[\/\\]/g, '-');
-        const suffix = allContexts.length ? '-' + allContexts.length : '';
-        await context.tracing.start({ name: name + suffix, screenshots: true, snapshots: true });
-      }
-
-      allContexts.push(context);
-      return context;
-    });
-
-    const testFailed = testInfo.status !== testInfo.expectedStatus;
-
-    await Promise.all(allContexts.map(async (context, contextIndex) => {
-      const preserveTrace = captureTrace && (trace === 'on' || (testFailed && trace === 'retain-on-failure') || (trace === 'on-first-retry' && testInfo.retry === 1));
-      if (preserveTrace) {
-        const suffix = contextIndex ? '-' + contextIndex : '';
-        const tracePath = testInfo.outputPath(`trace${suffix}.zip`);
-        await context.tracing.stop({ path: tracePath });
-        testInfo.attachments.push({ name: 'trace', path: tracePath, contentType: 'application/zip' });
-      } else if (captureTrace) {
+        if (!(context.tracing as any)[kTracingStarted]) {
+          await context.tracing.start({ screenshots: true, snapshots: true });
+          (context.tracing as any)[kTracingStarted] = true;
+        }
+        await context.tracing.startChunk();
+      } else {
         await context.tracing.stop();
       }
+      (context as any)._csi = {
+        onApiCallBegin: (apiCall: string) => {
+          const step = (testInfo as any)._addStep({
+            category: 'pw:api',
+            title: apiCall,
+            canHaveChildren: false,
+            forceNoParent: false,
+          });
+          return { userObject: step };
+        },
+        onApiCallEnd: (data: { userObject: any }, error?: Error) => {
+          const step = data.userObject;
+          step?.complete(error);
+        },
+      };
+    };
+
+    const onWillCloseContext = async (context: BrowserContext) => {
+      if (captureTrace) {
+        // Export trace for now. We'll know whether we have to preserve it
+        // after the test finishes.
+        const tracePath = path.join(_artifactsDir(), createGuid() + '.zip');
+        temporaryTraceFiles.push(tracePath);
+        await context.tracing.stopChunk({ path: tracePath });
+      }
+      if (screenshot === 'on' || screenshot === 'only-on-failure') {
+        // Capture screenshot for now. We'll know whether we have to preserve them
+        // after the test finishes.
+        await Promise.all(context.pages().map(async page => {
+          const screenshotPath = path.join(_artifactsDir(), createGuid() + '.png');
+          temporaryScreenshots.push(screenshotPath);
+          await page.screenshot({ timeout: 5000, path: screenshotPath }).catch(() => {});
+        }));
+      }
+    };
+
+    // 1. Setup instrumentation and process existing contexts.
+    (_browserType as any)._onDidCreateContext = onDidCreateContext;
+    (_browserType as any)._onWillCloseContext = onWillCloseContext;
+    (_browserType as any)._defaultContextOptions = _combinedContextOptions;
+    const existingContexts = Array.from((_browserType as any)._contexts) as BrowserContext[];
+    await Promise.all(existingContexts.map(onDidCreateContext));
+
+    // 2. Run the test.
+    await use();
+
+    // 3. Determine whether we need the artifacts.
+    const testFailed = testInfo.status !== testInfo.expectedStatus;
+    const isHook = !!hookType(testInfo);
+    const preserveTrace = captureTrace && !isHook && (trace === 'on' || (testFailed && trace === 'retain-on-failure') || (trace === 'on-first-retry' && testInfo.retry === 1));
+    const captureScreenshots = !isHook && (screenshot === 'on' || (screenshot === 'only-on-failure' && testFailed));
+
+    const traceAttachments: string[] = [];
+    const addTraceAttachment = () => {
+      const tracePath = testInfo.outputPath(`trace${traceAttachments.length ? '-' + traceAttachments.length : ''}.zip`);
+      traceAttachments.push(tracePath);
+      testInfo.attachments.push({ name: 'trace', path: tracePath, contentType: 'application/zip' });
+      return tracePath;
+    };
+
+    const screenshotAttachments: string[] = [];
+    const addScreenshotAttachment = () => {
+      const screenshotPath = testInfo.outputPath(`test-${testFailed ? 'failed' : 'finished'}-${screenshotAttachments.length + 1}.png`);
+      screenshotAttachments.push(screenshotPath);
+      testInfo.attachments.push({ name: 'screenshot', path: screenshotPath, contentType: 'image/png' });
+      return screenshotPath;
+    };
+
+    // 4. Cleanup instrumentation.
+    const leftoverContexts = Array.from((_browserType as any)._contexts) as BrowserContext[];
+    (_browserType as any)._onDidCreateContext = undefined;
+    (_browserType as any)._onWillCloseContext = undefined;
+    (_browserType as any)._defaultContextOptions = undefined;
+    leftoverContexts.forEach(context => (context as any)._csi = undefined);
+
+    // 5. Collect artifacts from any non-closed contexts.
+    await Promise.all(leftoverContexts.map(async context => {
+      if (preserveTrace)
+        await context.tracing.stopChunk({ path: addTraceAttachment() });
+      if (captureScreenshots)
+        await Promise.all(context.pages().map(page => page.screenshot({ timeout: 5000, path: addScreenshotAttachment() }).catch(() => {})));
     }));
 
-    const captureScreenshots = (screenshot === 'on' || (screenshot === 'only-on-failure' && testFailed));
-    if (captureScreenshots) {
-      await Promise.all(allPages.map(async (page, index) => {
-        const screenshotPath = testInfo.outputPath(`test-${testFailed ? 'failed' : 'finished'}-${index + 1}.png`);
-        try {
-          await page.screenshot({ timeout: 5000, path: screenshotPath });
-          testInfo.attachments.push({ name: 'screenshot', path: screenshotPath, contentType: 'image/png' });
-        } catch {
-        }
-      }));
-    }
+    // 6. Either remove or attach temporary traces and screenshots for contexts closed
+    // before the test has finished.
+    await Promise.all(temporaryTraceFiles.map(async file => {
+      if (preserveTrace)
+        await fs.promises.rename(file, addTraceAttachment()).catch(() => {});
+      else
+        await fs.promises.unlink(file).catch(() => {});
+    }));
+    await Promise.all(temporaryScreenshots.map(async file => {
+      if (captureScreenshots)
+        await fs.promises.rename(file, addScreenshotAttachment()).catch(() => {});
+      else
+        await fs.promises.unlink(file).catch(() => {});
+    }));
+  }, { auto: true }],
 
-    const prependToError = (testInfo.status ===  'timedOut' && allContexts.length) ?
-      formatPendingCalls((allContexts[0] as any)._connection.pendingProtocolCalls()) : '';
-    await Promise.all(allContexts.map(context => context.close()));
+  context: async ({ browser, video, _artifactsDir }, use, testInfo) => {
+    const hook = hookType(testInfo);
+    if (hook)
+      throw new Error(`"context" and "page" fixtures are not supported in ${hook}. Use browser.newContext() instead.`);
+
+    let videoMode = typeof video === 'string' ? video : video.mode;
+    if (videoMode === 'retry-with-video')
+      videoMode = 'on-first-retry';
+
+    const captureVideo = (videoMode === 'on' || videoMode === 'retain-on-failure' || (videoMode === 'on-first-retry' && testInfo.retry === 1));
+    const videoOptions: BrowserContextOptions = captureVideo ? {
+      recordVideo: {
+        dir: _artifactsDir(),
+        size: typeof video === 'string' ? undefined : video.size,
+      }
+    } : {};
+    const context = await browser.newContext(videoOptions);
+
+    const allPages: Page[] = [];
+    context.on('page', page => allPages.push(page));
+
+    await use(context);
+
+    const prependToError = testInfo.status === 'timedOut' ?
+      formatPendingCalls((context as any)._connection.pendingProtocolCalls()) : '';
+    await context.close();
     if (prependToError) {
       if (!testInfo.error) {
         testInfo.error = { value: prependToError };
@@ -243,6 +345,7 @@ export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions,
       }
     }
 
+    const testFailed = testInfo.status !== testInfo.expectedStatus;
     const preserveVideo = captureVideo && (videoMode === 'on' || (testFailed && videoMode === 'retain-on-failure') || (videoMode === 'on-first-retry' && testInfo.retry === 1));
     if (preserveVideo) {
       await Promise.all(allPages.map(async page => {
@@ -261,21 +364,17 @@ export const test = _baseTest.extend<PlaywrightTestArgs & PlaywrightTestOptions,
     }
   },
 
-  context: async ({ createContext }, use) => {
-    await use(await createContext());
-  },
-
   page: async ({ context }, use) => {
     await use(await context.newPage());
   },
 });
 export default test;
 
-function formatPendingCalls(calls: ProtocolCall[]) {
+function formatPendingCalls(calls: ParsedStackTrace[]) {
   if (!calls.length)
     return '';
   return 'Pending operations:\n' + calls.map(call => {
-    const frame = call.stack && call.stack[0] ? formatStackFrame(call.stack[0]) : '<unknown>';
+    const frame = call.frames && call.frames[0] ? formatStackFrame(call.frames[0]) : '<unknown>';
     return `  - ${call.apiName} at ${frame}\n`;
   }).join('') + '\n';
 }
@@ -285,6 +384,13 @@ function formatStackFrame(frame: StackFrame) {
   return `${file}:${frame.line || 1}:${frame.column || 1}`;
 }
 
+function hookType(testInfo: TestInfo): 'beforeAll' | 'afterAll' | undefined {
+  if (testInfo.title.startsWith('beforeAll'))
+    return 'beforeAll';
+  if (testInfo.title.startsWith('afterAll'))
+    return 'afterAll';
+}
+
 type StackFrame = {
   file: string,
   line?: number,
@@ -292,7 +398,10 @@ type StackFrame = {
   function?: string,
 };
 
-type ProtocolCall = {
-  stack?: StackFrame[],
-  apiName?: string,
+type ParsedStackTrace = {
+  frames: StackFrame[];
+  frameTexts: string[];
+  apiName: string;
 };
+
+const kTracingStarted = Symbol('kTracingStarted');

@@ -19,8 +19,46 @@ import { playwrightTest as test, expect } from './config/browserTest';
 import fs from 'fs';
 import * as path from 'path';
 import { getUserAgent } from '../lib/utils/utils';
+import WebSocket from 'ws';
+import { suppressCertificateWarning } from './config/utils';
 
 test.slow(true, 'All connect tests are slow');
+
+test('should connect over wss', async ({browserType , startRemoteServer, httpsServer, mode}) => {
+  test.skip(mode !== 'default'); // Out of process transport does not allow us to set env vars dynamically.
+  const remoteServer = await startRemoteServer();
+
+  const oldValue = process.env['NODE_TLS_REJECT_UNAUTHORIZED'];
+  // https://stackoverflow.com/a/21961005/552185
+  process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
+  suppressCertificateWarning();
+  try {
+    httpsServer.onceWebSocketConnection((ws, request) => {
+      const remote = new WebSocket(remoteServer.wsEndpoint(), [], {
+        perMessageDeflate: false,
+        maxPayload: 256 * 1024 * 1024, // 256Mb,
+      });
+      const remoteReadyPromise = new Promise<void>((f, r) => {
+        remote.once('open', f);
+        remote.once('error', r);
+      });
+      remote.on('close', () => ws.close());
+      remote.on('error', error => ws.close());
+      remote.on('message', message => ws.send(message));
+      ws.on('message', async message => {
+        await remoteReadyPromise;
+        remote.send(message);
+      });
+      ws.on('close', () => remote.close());
+      ws.on('error', () => remote.close());
+    });
+    const browser = await browserType.connect(`wss://localhost:${httpsServer.PORT}/ws`);
+    expect(browser.version()).toBeTruthy();
+    await browser.close();
+  } finally {
+    process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = oldValue;
+  }
+});
 
 test('should be able to reconnect to a browser', async ({browserType, startRemoteServer, server}) => {
   const remoteServer = await startRemoteServer();
@@ -57,18 +95,27 @@ test('should be able to connect two browsers at the same time', async ({browserT
   expect(browser1.contexts().length).toBe(1);
 
   await browser1.close();
+  expect(browser2.contexts().length).toBe(1);
   const page2 = await browser2.newPage();
   expect(await page2.evaluate(() => 7 * 6)).toBe(42); // original browser should still work
 
   await browser2.close();
 });
 
-test('should timeout while connecting', async ({browserType, startRemoteServer, server}) => {
+test('should timeout in socket while connecting', async ({browserType, startRemoteServer, server}) => {
+  const e = await browserType.connect({
+    wsEndpoint: `ws://localhost:${server.PORT}/ws-slow`,
+    timeout: 1000,
+  }).catch(e => e);
+  expect(e.message).toContain('browserType.connect: Opening handshake has timed out');
+});
+
+test('should timeout in connect while connecting', async ({browserType, startRemoteServer, server}) => {
   const e = await browserType.connect({
     wsEndpoint: `ws://localhost:${server.PORT}/ws`,
     timeout: 100,
   }).catch(e => e);
-  expect(e.message).toContain('browserType.connect: Timeout 100ms exceeded.');
+  expect(e.message).toContain('browserType.connect: Timeout 100ms exceeded');
 });
 
 test('should send extra headers with connect request', async ({browserType, startRemoteServer, server}) => {
@@ -100,6 +147,16 @@ test('should send default User-Agent header with connect request', async ({brows
   ]);
   expect(request.headers['user-agent']).toBe(getUserAgent());
   expect(request.headers['foo']).toBe('bar');
+});
+
+test('should support slowmo option', async ({browserType, startRemoteServer}) => {
+  const remoteServer = await startRemoteServer();
+
+  const browser1 = await browserType.connect(remoteServer.wsEndpoint(), { slowMo: 200 });
+  const start = Date.now();
+  await browser1.newContext();
+  await browser1.close();
+  expect(Date.now() - start).toBeGreaterThan(199);
 });
 
 test('disconnected event should be emitted when browser is closed or server is closed', async ({browserType, startRemoteServer}) => {
@@ -452,4 +509,25 @@ test('should be able to connect when the wsEndpont is passed as the first argume
   const page = await browser.newPage();
   expect(await page.evaluate('1 + 2')).toBe(3);
   await browser.close();
+});
+
+test('should save har', async ({browserType, startRemoteServer, server}, testInfo) => {
+  const remoteServer = await startRemoteServer();
+  const browser = await browserType.connect(remoteServer.wsEndpoint());
+  const harPath = testInfo.outputPath('test.har');
+  const context = await browser.newContext({
+    recordHar: {
+      path: harPath,
+    }
+  });
+  const page = await context.newPage();
+  await page.goto(server.EMPTY_PAGE);
+  await context.close();
+  await browser.close();
+
+  const log = JSON.parse(fs.readFileSync(harPath).toString())['log'];
+  expect(log.entries.length).toBe(1);
+  const entry = log.entries[0];
+  expect(entry.pageref).toBe(log.pages[0].id);
+  expect(entry.request.url).toBe(server.EMPTY_PAGE);
 });

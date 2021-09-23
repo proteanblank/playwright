@@ -149,6 +149,11 @@ export module Protocol {
       userAgent: string|null;
     };
     export type setUserAgentOverrideReturnValue = void;
+    export type setPlatformOverrideParameters = {
+      browserContextId?: string;
+      platform: string|null;
+    };
+    export type setPlatformOverrideReturnValue = void;
     export type setBypassCSPParameters = {
       browserContextId?: string;
       bypassCSP: boolean|null;
@@ -161,7 +166,7 @@ export module Protocol {
     export type setIgnoreHTTPSErrorsReturnValue = void;
     export type setJavaScriptDisabledParameters = {
       browserContextId?: string;
-      javaScriptDisabled: boolean|null;
+      javaScriptDisabled: boolean;
     };
     export type setJavaScriptDisabledReturnValue = void;
     export type setLocaleOverrideParameters = {
@@ -283,9 +288,11 @@ export module Protocol {
     export type setForcedColorsReturnValue = void;
     export type setVideoRecordingOptionsParameters = {
       browserContextId?: string;
-      dir: string;
-      width: number;
-      height: number;
+      options?: {
+        dir: string;
+        width: number;
+        height: number;
+      };
     };
     export type setVideoRecordingOptionsReturnValue = void;
     export type cancelDownloadParameters = {
@@ -643,6 +650,15 @@ export module Protocol {
       buttons: number;
     };
     export type dispatchMouseEventReturnValue = void;
+    export type dispatchWheelEventParameters = {
+      x: number;
+      y: number;
+      deltaX: number;
+      deltaY: number;
+      deltaZ: number;
+      modifiers: number;
+    };
+    export type dispatchWheelEventReturnValue = void;
     export type insertTextParameters = {
       text: string;
     };
@@ -892,6 +908,8 @@ export module Protocol {
       requestId: string;
       responseEndTime: number;
       transferSize: number;
+      encodedBodySize: number;
+      protocolVersion: string;
     }
     export type requestFailedPayload = {
       requestId: string;
@@ -933,6 +951,7 @@ export module Protocol {
           value: string;
         }[];
       };
+      error?: string;
     };
     export type fulfillInterceptedRequestParameters = {
       requestId: string;
@@ -1076,6 +1095,7 @@ export module Protocol {
     "Browser.setRequestInterception": Browser.setRequestInterceptionParameters;
     "Browser.setGeolocationOverride": Browser.setGeolocationOverrideParameters;
     "Browser.setUserAgentOverride": Browser.setUserAgentOverrideParameters;
+    "Browser.setPlatformOverride": Browser.setPlatformOverrideParameters;
     "Browser.setBypassCSP": Browser.setBypassCSPParameters;
     "Browser.setIgnoreHTTPSErrors": Browser.setIgnoreHTTPSErrorsParameters;
     "Browser.setJavaScriptDisabled": Browser.setJavaScriptDisabledParameters;
@@ -1119,6 +1139,7 @@ export module Protocol {
     "Page.dispatchTouchEvent": Page.dispatchTouchEventParameters;
     "Page.dispatchTapEvent": Page.dispatchTapEventParameters;
     "Page.dispatchMouseEvent": Page.dispatchMouseEventParameters;
+    "Page.dispatchWheelEvent": Page.dispatchWheelEventParameters;
     "Page.insertText": Page.insertTextParameters;
     "Page.crash": Page.crashParameters;
     "Page.handleDialog": Page.handleDialogParameters;
@@ -1153,6 +1174,7 @@ export module Protocol {
     "Browser.setRequestInterception": Browser.setRequestInterceptionReturnValue;
     "Browser.setGeolocationOverride": Browser.setGeolocationOverrideReturnValue;
     "Browser.setUserAgentOverride": Browser.setUserAgentOverrideReturnValue;
+    "Browser.setPlatformOverride": Browser.setPlatformOverrideReturnValue;
     "Browser.setBypassCSP": Browser.setBypassCSPReturnValue;
     "Browser.setIgnoreHTTPSErrors": Browser.setIgnoreHTTPSErrorsReturnValue;
     "Browser.setJavaScriptDisabled": Browser.setJavaScriptDisabledReturnValue;
@@ -1196,6 +1218,7 @@ export module Protocol {
     "Page.dispatchTouchEvent": Page.dispatchTouchEventReturnValue;
     "Page.dispatchTapEvent": Page.dispatchTapEventReturnValue;
     "Page.dispatchMouseEvent": Page.dispatchMouseEventReturnValue;
+    "Page.dispatchWheelEvent": Page.dispatchWheelEventReturnValue;
     "Page.insertText": Page.insertTextReturnValue;
     "Page.crash": Page.crashReturnValue;
     "Page.handleDialog": Page.handleDialogReturnValue;

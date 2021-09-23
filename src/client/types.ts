@@ -16,6 +16,8 @@
  */
 
 import * as channels from '../protocol/channels';
+import type { Size } from '../common/types';
+export { Size, Point, Rect, Quad, URLMatch, TimeoutOptions, HeadersArray, NewRequestOptions } from '../common/types';
 
 type LoggerSeverity = 'verbose' | 'info' | 'warning' | 'error';
 export interface Logger {
@@ -24,11 +26,10 @@ export interface Logger {
 }
 
 export interface ClientSideInstrumentation {
-  onApiCall(name: string): (error?: Error) => void;
+  onApiCallBegin(apiCall: string): { userObject: any };
+  onApiCallEnd(userData: { userObject: any }, error?: Error): any;
 }
 
-import { Size } from '../common/types';
-export { Size, Point, Rect, Quad, URLMatch, TimeoutOptions } from '../common/types';
 export type StrictOptions = { strict?: boolean };
 export type Headers = { [key: string]: string };
 export type Env = { [key: string]: string | number | boolean | undefined };
@@ -75,13 +76,11 @@ export type LaunchPersistentContextOptions = Omit<LaunchOptionsBase & BrowserCon
 export type ConnectOptions = {
   wsEndpoint: string,
   headers?: { [key: string]: string; };
-  _forwardPorts?: number[];
   slowMo?: number,
   timeout?: number,
   logger?: Logger,
 };
 export type LaunchServerOptions = {
-  _acceptForwardedPorts?: boolean,
   channel?: channels.BrowserTypeLaunchOptions['channel'],
   executablePath?: string,
   args?: string[],
@@ -102,6 +101,7 @@ export type LaunchServerOptions = {
   downloadsPath?: string,
   chromiumSandbox?: boolean,
   port?: number,
+  wsPath?: string,
   logger?: Logger,
 } & FirefoxUserPrefs;
 

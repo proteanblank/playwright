@@ -22,7 +22,7 @@ import { parseArgument, serializeResult } from './jsHandleDispatcher';
 import { ResponseDispatcher, RequestDispatcher } from './networkDispatchers';
 import { CallMetadata } from '../server/instrumentation';
 
-export class FrameDispatcher extends Dispatcher<Frame, channels.FrameInitializer> implements channels.FrameChannel {
+export class FrameDispatcher extends Dispatcher<Frame, channels.FrameInitializer, channels.FrameEvents> implements channels.FrameChannel {
   private _frame: Frame;
 
   static from(scope: DispatcherScope, frame: Frame): FrameDispatcher {
@@ -215,11 +215,19 @@ export class FrameDispatcher extends Dispatcher<Frame, channels.FrameInitializer
     return await this._frame.uncheck(metadata, params.selector, params);
   }
 
+  async waitForTimeout(params: channels.FrameWaitForTimeoutParams, metadata: CallMetadata): Promise<void> {
+    return await this._frame.waitForTimeout(metadata, params.timeout);
+  }
+
   async waitForFunction(params: channels.FrameWaitForFunctionParams, metadata: CallMetadata): Promise<channels.FrameWaitForFunctionResult> {
     return { handle: ElementHandleDispatcher.fromJSHandle(this._scope, await this._frame._waitForFunctionExpression(metadata, params.expression, params.isFunction, parseArgument(params.arg), params)) };
   }
 
   async title(params: channels.FrameTitleParams, metadata: CallMetadata): Promise<channels.FrameTitleResult> {
     return { value: await this._frame.title() };
+  }
+
+  async expect(params: channels.FrameExpectParams, metadata: CallMetadata): Promise<channels.FrameExpectResult> {
+    return await this._frame.expect(metadata, params.selector, params.expression, params);
   }
 }

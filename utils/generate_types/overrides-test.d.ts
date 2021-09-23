@@ -34,8 +34,11 @@ export type PreserveOutput = 'always' | 'never' | 'failures-only';
 export type UpdateSnapshots = 'all' | 'none' | 'missing';
 
 type FixtureDefine<TestArgs extends KeyValue = {}, WorkerArgs extends KeyValue = {}> = { test: TestType<TestArgs, WorkerArgs>, fixtures: Fixtures<{}, {}, TestArgs, WorkerArgs> };
+type UseOptions<TestArgs, WorkerArgs> = { [K in keyof WorkerArgs]?: WorkerArgs[K] } & { [K in keyof TestArgs]?: TestArgs[K] };
 
 type ExpectSettings = {
+  // Default timeout for async expect matchers in milliseconds, defaults to 5000ms.
+  timeout?: number;
   toMatchSnapshot?: {
     // Pixel match threshold.
     threshold?: number
@@ -57,10 +60,10 @@ interface TestProject {
 
 export interface Project<TestArgs = {}, WorkerArgs = {}> extends TestProject {
   define?: FixtureDefine | FixtureDefine[];
-  use?: Fixtures<{}, {}, TestArgs, WorkerArgs>;
+  use?: UseOptions<TestArgs, WorkerArgs>;
 }
 
-export type FullProject<TestArgs = {}, WorkerArgs = {}> = Required<Project<TestArgs, WorkerArgs>>;
+export type FullProject<TestArgs = {}, WorkerArgs = {}> = Required<Project<PlaywrightTestOptions & TestArgs, PlaywrightWorkerOptions & WorkerArgs>>;
 
 export type WebServerConfig = {
   /**
@@ -127,10 +130,10 @@ interface TestConfig {
 export interface Config<TestArgs = {}, WorkerArgs = {}> extends TestConfig {
   projects?: Project<TestArgs, WorkerArgs>[];
   define?: FixtureDefine | FixtureDefine[];
-  use?: Fixtures<{}, {}, TestArgs, WorkerArgs>;
+  use?: UseOptions<TestArgs, WorkerArgs>;
 }
 
-export interface FullConfig {
+export interface FullConfig<TestArgs = {}, WorkerArgs = {}> {
   forbidOnly: boolean;
   globalSetup: string | null;
   globalTeardown: string | null;
@@ -139,7 +142,7 @@ export interface FullConfig {
   grepInvert: RegExp | RegExp[] | null;
   maxFailures: number;
   preserveOutput: PreserveOutput;
-  projects: FullProject[];
+  projects: FullProject<TestArgs, WorkerArgs>[];
   reporter: ReporterDescription[];
   reportSlowTests: ReportSlowTests;
   rootDir: string;
@@ -221,12 +224,17 @@ export interface TestType<TestArgs extends KeyValue, WorkerArgs extends KeyValue
   only: TestFunction<TestArgs & WorkerArgs>;
   describe: SuiteFunction & {
     only: SuiteFunction;
+    serial: SuiteFunction & {
+      only: SuiteFunction;
+    };
+    parallel: SuiteFunction & {
+      only: SuiteFunction;
+    };
   };
+  skip(title: string, testFunction: (args: TestArgs, testInfo: TestInfo) => Promise<void> | void): void;
   skip(): void;
-  skip(condition: boolean): void;
-  skip(condition: boolean, description: string): void;
-  skip(callback: (args: TestArgs & WorkerArgs) => boolean): void;
-  skip(callback: (args: TestArgs & WorkerArgs) => boolean, description: string): void;
+  skip(condition: boolean, description?: string): void;
+  skip(callback: (args: TestArgs & WorkerArgs) => boolean, description?: string): void;
   fixme(): void;
   fixme(condition: boolean): void;
   fixme(condition: boolean, description: string): void;
@@ -245,8 +253,8 @@ export interface TestType<TestArgs extends KeyValue, WorkerArgs extends KeyValue
   setTimeout(timeout: number): void;
   beforeEach(inner: (args: TestArgs & WorkerArgs, testInfo: TestInfo) => Promise<any> | any): void;
   afterEach(inner: (args: TestArgs & WorkerArgs, testInfo: TestInfo) => Promise<any> | any): void;
-  beforeAll(inner: (args: WorkerArgs, workerInfo: WorkerInfo) => Promise<any> | any): void;
-  afterAll(inner: (args: WorkerArgs, workerInfo: WorkerInfo) => Promise<any> | any): void;
+  beforeAll(inner: (args: TestArgs & WorkerArgs, testInfo: TestInfo) => Promise<any> | any): void;
+  afterAll(inner: (args: TestArgs & WorkerArgs, testInfo: TestInfo) => Promise<any> | any): void;
   use(fixtures: Fixtures<{}, {}, TestArgs, WorkerArgs>): void;
   step(title: string, body: () => Promise<any>): Promise<any>;
   expect: Expect;
@@ -260,11 +268,11 @@ export type WorkerFixture<R, Args extends KeyValue> = (args: Args, use: (r: R) =
 type TestFixtureValue<R, Args> = R | TestFixture<R, Args>;
 type WorkerFixtureValue<R, Args> = R | WorkerFixture<R, Args>;
 export type Fixtures<T extends KeyValue = {}, W extends KeyValue = {}, PT extends KeyValue = {}, PW extends KeyValue = {}> = {
-  [K in keyof PW]?: WorkerFixtureValue<PW[K], W & PW>;
+  [K in keyof PW]?: WorkerFixtureValue<PW[K], W & PW> | [WorkerFixtureValue<PW[K], W & PW>, { scope: 'worker' }];
 } & {
-  [K in keyof PT]?: TestFixtureValue<PT[K], T & W & PT & PW>;
+  [K in keyof PT]?: TestFixtureValue<PT[K], T & W & PT & PW> | [TestFixtureValue<PT[K], T & W & PT & PW>, { scope: 'test' }];
 } & {
-  [K in keyof W]?: [WorkerFixtureValue<W[K], W & PW>, { scope: 'worker' | 'file', auto?: boolean }];
+  [K in keyof W]?: [WorkerFixtureValue<W[K], W & PW>, { scope: 'worker', auto?: boolean }];
 } & {
   [K in keyof T]?: TestFixtureValue<T[K], T & W & PT & PW> | [TestFixtureValue<T[K], T & W & PT & PW>, { scope?: 'test', auto?: boolean }];
 };
@@ -282,14 +290,14 @@ export interface PlaywrightWorkerOptions {
   headless: boolean | undefined;
   channel: BrowserChannel | undefined;
   launchOptions: LaunchOptions;
+  screenshot: 'off' | 'on' | 'only-on-failure';
+  trace: 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | /** deprecated */ 'retry-with-trace';
+  video: VideoMode | { mode: VideoMode, size: ViewportSize };
 }
 
 export type VideoMode = 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | /** deprecated */ 'retry-with-video';
 
 export interface PlaywrightTestOptions {
-  screenshot: 'off' | 'on' | 'only-on-failure';
-  trace: 'off' | 'on' | 'retain-on-failure' | 'on-first-retry' | /** deprecated */ 'retry-with-trace';
-  video: VideoMode | { mode: VideoMode, size: ViewportSize };
   acceptDownloads: boolean | undefined;
   bypassCSP: boolean | undefined;
   colorScheme: ColorScheme | undefined;
@@ -322,7 +330,6 @@ export interface PlaywrightWorkerArgs {
 }
 
 export interface PlaywrightTestArgs {
-  createContext: (options?: BrowserContextOptions) => Promise<BrowserContext>;
   context: BrowserContext;
   page: Page;
 }

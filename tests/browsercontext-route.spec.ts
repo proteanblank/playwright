@@ -124,7 +124,7 @@ it('should support Set-Cookie header', async ({contextFactory, server, browserNa
   });
   await page.goto('https://example.com');
   expect(await context.cookies()).toEqual([{
-    sameSite: 'None',
+    sameSite: browserName === 'chromium' ? 'Lax' : 'None',
     name: 'name',
     value: 'value',
     domain: '.example.com',
@@ -170,7 +170,7 @@ it('should use Set-Cookie header in future requests', async ({contextFactory, se
   });
   await page.goto(server.EMPTY_PAGE);
   expect(await context.cookies()).toEqual([{
-    sameSite: 'None',
+    sameSite: browserName === 'chromium' ? 'Lax' : 'None',
     name: 'name',
     value: 'value',
     domain: 'localhost',
@@ -197,4 +197,16 @@ it('should work with ignoreHTTPSErrors', async ({browser, httpsServer}) => {
   const response = await page.goto(httpsServer.EMPTY_PAGE);
   expect(response.status()).toBe(200);
   await context.close();
+});
+
+it('should support the times parameter with route matching', async ({context, page, server}) => {
+  const intercepted = [];
+  await context.route('**/empty.html', route => {
+    intercepted.push(1);
+    route.continue();
+  }, { times: 1});
+  await page.goto(server.EMPTY_PAGE);
+  await page.goto(server.EMPTY_PAGE);
+  await page.goto(server.EMPTY_PAGE);
+  expect(intercepted).toHaveLength(1);
 });

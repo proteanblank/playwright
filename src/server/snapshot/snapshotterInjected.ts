@@ -23,6 +23,7 @@ export type SnapshotData = {
     url: string,
     // String is the content. Number is "x snapshots ago", same url.
     content: string | number,
+    contentType: 'text/css'
   }[],
   viewport: { width: number, height: number },
   url: string,
@@ -40,6 +41,7 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
   const kScrollTopAttribute = '__playwright_scroll_top_';
   const kScrollLeftAttribute = '__playwright_scroll_left_';
   const kStyleSheetAttribute = '__playwright_style_sheet_';
+  const kBlobUrlPrefix = 'http://playwright.bloburl/#';
 
   // Symbols for our own info on Nodes/StyleSheets.
   const kSnapshotFrameId = Symbol('__playwright_snapshot_frameid_');
@@ -88,6 +90,8 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
       this._interceptNativeMethod(window.CSSStyleSheet.prototype, 'removeRule', (sheet: CSSStyleSheet) => this._invalidateStyleSheet(sheet));
       this._interceptNativeGetter(window.CSSStyleSheet.prototype, 'rules', (sheet: CSSStyleSheet) => this._invalidateStyleSheet(sheet));
       this._interceptNativeGetter(window.CSSStyleSheet.prototype, 'cssRules', (sheet: CSSStyleSheet) => this._invalidateStyleSheet(sheet));
+      this._interceptNativeMethod(window.CSSStyleSheet.prototype, 'replaceSync', (sheet: CSSStyleSheet) => this._invalidateStyleSheet(sheet));
+      this._interceptNativeAsyncMethod(window.CSSStyleSheet.prototype, 'replace', (sheet: CSSStyleSheet) => this._invalidateStyleSheet(sheet));
 
       this._fakeBase = document.createElement('base');
 
@@ -102,6 +106,17 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
         return;
       obj[method] = function(...args: any[]) {
         const result = native.call(this, ...args);
+        cb(this, result);
+        return result;
+      };
+    }
+
+    private _interceptNativeAsyncMethod(obj: any, method: string, cb: (thisObj: any, result: any) => void) {
+      const native = obj[method] as Function;
+      if (!native)
+        return;
+      obj[method] = async function(...args: any[]) {
+        const result = await native.call(this, ...args);
         cb(this, result);
         return result;
       };
@@ -183,6 +198,9 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
     private _sanitizeUrl(url: string): string {
       if (url.startsWith('javascript:'))
         return '';
+      // Rewrite blob urls so that Service Worker can intercept them.
+      if (url.startsWith('blob:'))
+        return kBlobUrlPrefix + url;
       return url;
     }
 
@@ -247,6 +265,8 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
         if (nodeName === 'SCRIPT')
           return;
         if (this._removeNoScript && nodeName === 'NOSCRIPT')
+          return;
+        if (nodeName === 'META' && (node as HTMLMetaElement).httpEquiv.toLowerCase() === 'content-security-policy')
           return;
 
         const data = ensureCachedData(node);
@@ -443,8 +463,8 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
         doctype: document.doctype ? document.doctype.name : undefined,
         resourceOverrides: [],
         viewport: {
-          width: Math.max(document.body ? document.body.offsetWidth : 0, document.documentElement ? document.documentElement.offsetWidth : 0),
-          height: Math.max(document.body ? document.body.offsetHeight : 0, document.documentElement ? document.documentElement.offsetHeight : 0),
+          width: window.innerWidth,
+          height: window.innerHeight,
         },
         url: location.href,
         timestamp,
@@ -461,7 +481,7 @@ export function frameSnapshotStreamer(snapshotStreamer: string) {
         }
         const base = this._getSheetBase(sheet);
         const url = removeHash(this._resolveUrl(base, sheet.href!));
-        result.resourceOverrides.push({ url, content });
+        result.resourceOverrides.push({ url, content, contentType: 'text/css' },);
       }
 
       result.collectionTime = performance.now() - result.timestamp;

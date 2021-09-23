@@ -23,13 +23,13 @@ import * as frames from '../frames';
 import * as types from '../types';
 import { Protocol } from './protocol';
 import { InterceptedResponse } from '../network';
+import { HeadersArray } from '../../server/types';
 
 export class FFNetworkManager {
   private _session: FFSession;
   private _requests: Map<string, InterceptableRequest>;
   private _page: Page;
   private _eventListeners: RegisteredListener[];
-  private _startTime = 0;
 
   constructor(session: FFSession, page: Page) {
     this._session = session;
@@ -60,9 +60,12 @@ export class FFNetworkManager {
       return;
     if (redirectedFrom)
       this._requests.delete(redirectedFrom._id);
-    const request = new InterceptableRequest(this._session, frame, redirectedFrom, event);
+    const request = new InterceptableRequest(frame, redirectedFrom, event);
+    let route;
+    if (event.isIntercepted)
+      route = new FFRouteImpl(this._session, request);
     this._requests.set(request._id, request);
-    this._page._frameManager.requestStarted(request.request);
+    this._page._frameManager.requestStarted(request.request, route);
   }
 
   _onResponseReceived(event: Protocol.Network.responseReceivedPayload) {
@@ -78,18 +81,23 @@ export class FFNetworkManager {
       return Buffer.from(response.base64body, 'base64');
     };
 
-    this._startTime = event.timing.startTime;
+    const startTime = event.timing.startTime;
+    function relativeToStart(time: number): number {
+      if (!time)
+        return -1;
+      return (time - startTime) / 1000;
+    }
     const timing = {
-      startTime: this._startTime / 1000,
-      domainLookupStart: this._relativeTiming(event.timing.domainLookupStart),
-      domainLookupEnd: this._relativeTiming(event.timing.domainLookupEnd),
-      connectStart: this._relativeTiming(event.timing.connectStart),
-      secureConnectionStart: this._relativeTiming(event.timing.secureConnectionStart),
-      connectEnd: this._relativeTiming(event.timing.connectEnd),
-      requestStart: this._relativeTiming(event.timing.requestStart),
-      responseStart: this._relativeTiming(event.timing.responseStart),
+      startTime: startTime / 1000,
+      domainLookupStart: relativeToStart(event.timing.domainLookupStart),
+      domainLookupEnd: relativeToStart(event.timing.domainLookupEnd),
+      connectStart: relativeToStart(event.timing.connectStart),
+      secureConnectionStart: relativeToStart(event.timing.secureConnectionStart),
+      connectEnd: relativeToStart(event.timing.connectEnd),
+      requestStart: relativeToStart(event.timing.requestStart),
+      responseStart: relativeToStart(event.timing.responseStart),
     };
-    const response = new network.Response(request.request, event.status, event.statusText, event.headers, timing, getResponseBody);
+    const response = new network.Response(request.request, event.status, event.statusText, parseMultivalueHeaders(event.headers), timing, getResponseBody);
     if (event?.remoteIPAddress && typeof event?.remotePort === 'number') {
       response._serverAddrFinished({
         ipAddress: event.remoteIPAddress,
@@ -113,15 +121,19 @@ export class FFNetworkManager {
     if (!request)
       return;
     const response = request.request._existingResponse()!;
+    request.request.responseSize.transferSize = event.transferSize;
+
     // Keep redirected requests in the map for future reference as redirectedFrom.
     const isRedirected = response.status() >= 300 && response.status() <= 399;
+    const responseEndTime = event.responseEndTime ? event.responseEndTime / 1000 - response.timing().startTime : -1;
     if (isRedirected) {
-      response._requestFinished(this._relativeTiming(event.responseEndTime), 'Response body is unavailable for redirect responses');
+      response._requestFinished(responseEndTime);
     } else {
       this._requests.delete(request._id);
-      response._requestFinished(this._relativeTiming(event.responseEndTime), undefined, event.transferSize);
+      response._requestFinished(responseEndTime);
     }
-    this._page._frameManager.requestFinished(request.request);
+    response._setHttpVersion(event.protocolVersion);
+    this._page._frameManager.reportRequestFinished(request.request, response);
   }
 
   _onRequestFailed(event: Protocol.Network.requestFailedPayload) {
@@ -134,12 +146,6 @@ export class FFNetworkManager {
       response._requestFinished(-1);
     request.request._setFailureText(event.errorCode);
     this._page._frameManager.requestFailed(request.request, event.errorCode === 'NS_BINDING_ABORTED');
-  }
-
-  _relativeTiming(time: number): number {
-    if (!time)
-      return -1;
-    return (time - this._startTime) / 1000;
   }
 }
 
@@ -173,34 +179,49 @@ const internalCauseToResourceType: {[key: string]: string} = {
   TYPE_INTERNAL_EVENTSOURCE: 'eventsource',
 };
 
-class InterceptableRequest implements network.RouteDelegate {
+class InterceptableRequest {
   readonly request: network.Request;
-  _id: string;
-  private _session: FFSession;
+  readonly _id: string;
+  private _redirectedTo: InterceptableRequest | undefined;
 
-  constructor(session: FFSession, frame: frames.Frame, redirectedFrom: InterceptableRequest | null, payload: Protocol.Network.requestWillBeSentPayload) {
+  constructor(frame: frames.Frame, redirectedFrom: InterceptableRequest | null, payload: Protocol.Network.requestWillBeSentPayload) {
     this._id = payload.requestId;
-    this._session = session;
+    if (redirectedFrom)
+      redirectedFrom._redirectedTo = this;
     let postDataBuffer = null;
     if (payload.postData)
       postDataBuffer = Buffer.from(payload.postData, 'base64');
-    this.request = new network.Request(payload.isIntercepted ? this : null, frame, redirectedFrom ? redirectedFrom.request : null, payload.navigationId,
+    this.request = new network.Request(frame, redirectedFrom ? redirectedFrom.request : null, payload.navigationId,
         payload.url, internalCauseToResourceType[payload.internalCause] || causeToResourceType[payload.cause] || 'other', payload.method, postDataBuffer, payload.headers);
   }
 
-  async responseBody(forFulfill: boolean): Promise<Buffer> {
-    // Empty buffer will result in the response being used.
-    if (forFulfill)
-      return Buffer.from('');
+  _finalRequest(): InterceptableRequest {
+    let request: InterceptableRequest = this;
+    while (request._redirectedTo)
+      request = request._redirectedTo;
+    return request;
+  }
+}
+
+class FFRouteImpl implements network.RouteDelegate {
+  private _request: InterceptableRequest;
+  private _session: FFSession;
+
+  constructor(session: FFSession, request: InterceptableRequest) {
+    this._session = session;
+    this._request = request;
+  }
+
+  async responseBody(): Promise<Buffer> {
     const response = await this._session.send('Network.getResponseBody', {
-      requestId: this._id
+      requestId: this._request._finalRequest()._id
     });
     return Buffer.from(response.base64body, 'base64');
   }
 
-  async continue(overrides: types.NormalizedContinueOverrides): Promise<network.InterceptedResponse|null> {
+  async continue(request: network.Request, overrides: types.NormalizedContinueOverrides): Promise<network.InterceptedResponse|null> {
     const result = await this._session.sendMayFail('Network.resumeInterceptedRequest', {
-      requestId: this._id,
+      requestId: this._request._id,
       url: overrides.url,
       method: overrides.method,
       headers: overrides.headers,
@@ -209,14 +230,16 @@ class InterceptableRequest implements network.RouteDelegate {
     }) as any;
     if (!overrides.interceptResponse)
       return null;
-    return new InterceptedResponse(this.request, result.response.status, result.response.statusText, result.response.headers);
+    if (result.error)
+      throw new Error(`Request failed: ${result.error}`);
+    return new InterceptedResponse(request, result.response.status, result.response.statusText, result.response.headers);
   }
 
   async fulfill(response: types.NormalizedFulfillResponse) {
     const base64body = response.isBase64 ? response.body : Buffer.from(response.body).toString('base64');
 
     await this._session.sendMayFail('Network.fulfillInterceptedRequest', {
-      requestId: this._id,
+      requestId: this._request._id,
       status: response.status,
       statusText: network.STATUS_TEXTS[String(response.status)] || '',
       headers: response.headers,
@@ -226,8 +249,19 @@ class InterceptableRequest implements network.RouteDelegate {
 
   async abort(errorCode: string) {
     await this._session.sendMayFail('Network.abortInterceptedRequest', {
-      requestId: this._id,
+      requestId: this._request._id,
       errorCode,
     });
   }
+}
+
+function parseMultivalueHeaders(headers: HeadersArray) {
+  const result: HeadersArray = [];
+  for (const header of headers) {
+    const separator = header.name.toLowerCase() === 'set-cookie' ? '\n' : ',';
+    const tokens = header.value.split(separator).map(s => s.trim());
+    for (const token of tokens)
+      result.push({ name: header.name, value: token });
+  }
+  return result;
 }

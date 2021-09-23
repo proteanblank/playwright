@@ -29,10 +29,10 @@ import { PythonLanguageGenerator } from './recorder/python';
 import * as recorderSource from '../../generated/recorderSource';
 import * as consoleApiSource from '../../generated/consoleApiSource';
 import { RecorderApp } from './recorder/recorderApp';
-import { CallMetadata, InstrumentationListener, internalCallMetadata, SdkObject } from '../instrumentation';
+import { CallMetadata, InstrumentationListener, SdkObject } from '../instrumentation';
 import { Point } from '../../common/types';
 import { CallLog, CallLogStatus, EventData, Mode, Source, UIState } from './recorder/recorderTypes';
-import { isUnderTest } from '../../utils/utils';
+import { createGuid, isUnderTest, monotonicTime } from '../../utils/utils';
 import { metadataToCallLog } from './recorder/recorderUtils';
 import { Debugger } from './debugger';
 
@@ -78,7 +78,7 @@ export class RecorderSupplement implements InstrumentationListener {
     context.instrumentation.addListener(this);
     this._params = params;
     this._mode = params.startRecording ? 'recording' : 'none';
-    const language = params.language || context._options.sdkLanguage;
+    const language = params.language || context._browser.options.sdkLanguage;
 
     const languages = new Set([
       new JavaLanguageGenerator(),
@@ -184,11 +184,11 @@ export class RecorderSupplement implements InstrumentationListener {
     // Input actions that potentially lead to navigation are intercepted on the page and are
     // performed by the Playwright.
     await this._context.exposeBinding('_playwrightRecorderPerformAction', false,
-        (source: BindingSource, action: actions.Action) => this._performAction(source.frame, action), 'utility');
+        (source: BindingSource, action: actions.Action) => this._performAction(source.frame, action));
 
     // Other non-essential actions are simply being recorded.
     await this._context.exposeBinding('_playwrightRecorderRecordAction', false,
-        (source: BindingSource, action: actions.Action) => this._recordAction(source.frame, action), 'utility');
+        (source: BindingSource, action: actions.Action) => this._recordAction(source.frame, action));
 
     await this._context.exposeBinding('_playwrightRecorderState', false, source => {
       let actionSelector = this._highlightedSelector;
@@ -205,20 +205,20 @@ export class RecorderSupplement implements InstrumentationListener {
         actionSelector,
       };
       return uiState;
-    }, 'utility');
+    });
 
     await this._context.exposeBinding('_playwrightRecorderSetSelector', false, async (_, selector: string) => {
       this._setMode('none');
       await this._recorderApp?.setSelector(selector, true);
       await this._recorderApp?.bringToFront();
-    }, 'utility');
+    });
 
     await this._context.exposeBinding('_playwrightResume', false, () => {
       this._debugger.resume(false);
-    }, 'main');
+    });
 
-    await this._context.extendInjectedScript('utility', recorderSource.source, { isUnderTest: isUnderTest() });
-    await this._context.extendInjectedScript('main', consoleApiSource.source);
+    await this._context.extendInjectedScript(recorderSource.source, { isUnderTest: isUnderTest() });
+    await this._context.extendInjectedScript(consoleApiSource.source);
 
     if (this._debugger.isPaused())
       this._pausedStateChanged();
@@ -308,36 +308,64 @@ export class RecorderSupplement implements InstrumentationListener {
       ...describeFrame(frame),
       action
     };
-    this._generator.willPerformAction(actionInContext);
-    const noCallMetadata = internalCallMetadata();
-    try {
-      const kActionTimeout = 5000;
-      if (action.name === 'click') {
-        const { options } = toClickOptions(action);
-        await frame.click(noCallMetadata, action.selector, { ...options, timeout: kActionTimeout });
+
+    const perform = async (action: string, params: any, cb: (callMetadata: CallMetadata) => Promise<any>) => {
+      const callMetadata: CallMetadata = {
+        id: `call@${createGuid()}`,
+        apiName: 'frame.' + action,
+        objectId: frame.guid,
+        pageId: frame._page.guid,
+        frameId: frame.guid,
+        startTime: monotonicTime(),
+        endTime: 0,
+        type: 'Frame',
+        method: action,
+        params,
+        log: [],
+        snapshots: [],
+      };
+      this._generator.willPerformAction(actionInContext);
+
+      try {
+        await frame.instrumentation.onBeforeCall(frame, callMetadata);
+        await cb(callMetadata);
+      } catch (e) {
+        callMetadata.endTime = monotonicTime();
+        await frame.instrumentation.onAfterCall(frame, callMetadata);
+        this._generator.performedActionFailed(actionInContext);
+        return;
       }
-      if (action.name === 'press') {
-        const modifiers = toModifiers(action.modifiers);
-        const shortcut = [...modifiers, action.key].join('+');
-        await frame.press(noCallMetadata, action.selector, shortcut, { timeout: kActionTimeout });
-      }
-      if (action.name === 'check')
-        await frame.check(noCallMetadata, action.selector, { timeout: kActionTimeout });
-      if (action.name === 'uncheck')
-        await frame.uncheck(noCallMetadata, action.selector, { timeout: kActionTimeout });
-      if (action.name === 'select')
-        await frame.selectOption(noCallMetadata, action.selector, [], action.options.map(value => ({ value })), { timeout: kActionTimeout });
-    } catch (e) {
-      this._generator.performedActionFailed(actionInContext);
-      return;
+
+      callMetadata.endTime = monotonicTime();
+      await frame.instrumentation.onAfterCall(frame, callMetadata);
+
+      const timer = setTimeout(() => {
+        // Commit the action after 5 seconds so that no further signals are added to it.
+        actionInContext.committed = true;
+        this._timers.delete(timer);
+      }, 5000);
+      this._generator.didPerformAction(actionInContext);
+      this._timers.add(timer);
+    };
+
+    const kActionTimeout = 5000;
+    if (action.name === 'click') {
+      const { options } = toClickOptions(action);
+      await perform('click', { selector: action.selector }, callMetadata => frame.click(callMetadata, action.selector, { ...options, timeout: kActionTimeout }));
     }
-    const timer = setTimeout(() => {
-      // Commit the action after 5 seconds so that no further signals are added to it.
-      actionInContext.committed = true;
-      this._timers.delete(timer);
-    }, 5000);
-    this._generator.didPerformAction(actionInContext);
-    this._timers.add(timer);
+    if (action.name === 'press') {
+      const modifiers = toModifiers(action.modifiers);
+      const shortcut = [...modifiers, action.key].join('+');
+      await perform('press', { selector: action.selector, key: shortcut }, callMetadata => frame.press(callMetadata, action.selector, shortcut, { timeout: kActionTimeout }));
+    }
+    if (action.name === 'check')
+      await perform('check', { selector: action.selector }, callMetadata => frame.check(callMetadata, action.selector, { timeout: kActionTimeout }));
+    if (action.name === 'uncheck')
+      await perform('uncheck', { selector: action.selector }, callMetadata => frame.uncheck(callMetadata, action.selector, { timeout: kActionTimeout }));
+    if (action.name === 'select') {
+      const values = action.options.map(value => ({ value }));
+      await perform('selectOption', { selector: action.selector, values }, callMetadata => frame.selectOption(callMetadata, action.selector, [], values, { timeout: kActionTimeout }));
+    }
   }
 
   private async _recordAction(frame: Frame, action: actions.Action) {

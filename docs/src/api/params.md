@@ -117,6 +117,13 @@ Clicks on the source element at this point relative to the top-left corner of th
 
 Drops on the target element at this point relative to the top-left corner of the element's padding box. If not specified, some visible point of the element is used.
 
+## input-checked
+* langs:
+  - alias-csharp: checkedState
+- `checked` <[boolean]>
+
+Whether to check or uncheck the checkbox.
+
 ## query-selector
 - `selector` <[string]>
 
@@ -241,7 +248,7 @@ Whether to automatically download all the attachments. Defaults to `false` where
 ## context-option-ignorehttpserrors
 - `ignoreHTTPSErrors` <[boolean]>
 
-Whether to ignore HTTPS errors during navigation. Defaults to `false`.
+Whether to ignore HTTPS errors when sending network requests. Defaults to `false`.
 
 ## context-option-bypasscsp
 - `bypassCSP` <[boolean]>
@@ -388,7 +395,7 @@ A list of permissions to grant to all pages in this context. See
 ## context-option-extrahttpheaders
 - `extraHTTPHeaders` <[Object]<[string], [string]>>
 
-An object containing additional HTTP headers to be sent with every request. All header values must be strings.
+An object containing additional HTTP headers to be sent with every request.
 
 ## context-option-offline
 - `offline` <[boolean]>
@@ -413,6 +420,16 @@ Emulates `'prefers-colors-scheme'` media feature, supported values are `'light'`
 
 Emulates `'prefers-reduced-motion'` media feature, supported values are `'reduce'`, `'no-preference'`. See [`method: Page.emulateMedia`] for more details. Defaults
 to `'no-preference'`.
+
+## context-option-forcedColors
+- `forcedColors` <[ForcedColors]<"active"|"none">>
+
+Emulates `'forced-colors'` media feature, supported values are `'active'`, `'none'`. See [`method: Page.emulateMedia`] for more details. Defaults
+to `'none'`.
+
+:::note
+It's not supported in WebKit, see [here](https://bugs.webkit.org/show_bug.cgi?id=225281) in their issue tracker.
+:::
 
 ## context-option-logger
 * langs: js
@@ -511,6 +528,13 @@ contexts override the proxy, global proxy will be never used and can be any stri
 `launch({ proxy: { server: 'http://per-context' } })`.
 :::
 
+## context-option-strict
+- `strictSelectors` <[boolean]>
+
+It specified, enables strict selectors mode for this context. In the strict selectors mode all operations
+on selectors that imply single target DOM element will throw when more than one element matches the selector.
+See [Locator] to learn more about the strict mode.
+
 ## select-options-values
 * langs: java, js, csharp
 - `values` <[null]|[string]|[ElementHandle]|[Array]<[string]>|[Object]|[Array]<[ElementHandle]>|[Array]<[Object]>>
@@ -525,7 +549,9 @@ is considered matching if all specified properties match.
 ## wait-for-navigation-url
 - `url` <[string]|[RegExp]|[function]\([URL]\):[boolean]>
 
-A glob pattern, regex pattern or predicate receiving [URL] to match while waiting for the navigation.
+A glob pattern, regex pattern or predicate receiving [URL] to match while waiting for the navigation. Note that if
+the parameter is a string without wilcard characters, the method will wait for navigation to URL that is exactly
+equal to the string.
 
 ## wait-for-event-event
 * langs: js, python, java
@@ -628,6 +654,7 @@ using the [`method: AndroidDevice.setDefaultTimeout`] method.
 - %%-context-option-httpcredentials-%%
 - %%-context-option-colorscheme-%%
 - %%-context-option-reducedMotion-%%
+- %%-context-option-forcedColors-%%
 - %%-context-option-logger-%%
 - %%-context-option-videospath-%%
 - %%-context-option-videosize-%%
@@ -637,6 +664,7 @@ using the [`method: AndroidDevice.setDefaultTimeout`] method.
 - %%-context-option-recordvideo-%%
 - %%-context-option-recordvideo-dir-%%
 - %%-context-option-recordvideo-size-%%
+- %%-context-option-strict-%%
 
 ## browser-option-args
 - `args` <[Array]<[string]>>
@@ -659,7 +687,8 @@ Enable Chromium sandboxing. Defaults to `false`.
 - `downloadsPath` <[path]>
 
 If specified, accepted downloads are downloaded into this directory. Otherwise, temporary directory is created and is
-deleted when browser is closed.
+deleted when browser is closed. In either case, the downloads are deleted when the browser context they were created in
+is closed.
 
 ## browser-option-executablepath
 - `executablePath` <[path]>

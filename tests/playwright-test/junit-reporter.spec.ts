@@ -15,6 +15,7 @@
  */
 
 import xml2js from 'xml2js';
+import path from 'path';
 import { test, expect } from './playwright-test-fixtures';
 
 test('should render expected', async ({ runInlineTest }) => {
@@ -102,16 +103,19 @@ test('should render stdout', async ({ runInlineTest }) => {
       const { test } = pwt;
       test('one', async ({}) => {
         console.log(colors.yellow('Hello world'));
+        console.log('Hello again');
+        console.error('My error');
         test.expect("abc").toBe('abcd');
       });
     `,
   }, { reporter: 'junit' });
   const xml = parseXML(result.output);
-  const suite = xml['testsuites']['testsuite'][0];
-  expect(suite['system-out'].length).toBe(1);
-  expect(suite['system-out'][0]).toContain('Hello world');
-  expect(suite['system-out'][0]).not.toContain('u00');
-  expect(suite['testcase'][0]['failure'][0]['_']).toContain(`>  9 |         test.expect("abc").toBe('abcd');`);
+  const testcase = xml['testsuites']['testsuite'][0]['testcase'][0];
+  expect(testcase['system-out'].length).toBe(1);
+  expect(testcase['system-out'][0]).toContain('[33mHello world[39m\nHello again');
+  expect(testcase['system-out'][0]).not.toContain('u00');
+  expect(testcase['system-err'][0]).toContain('My error');
+  expect(testcase['failure'][0]['_']).toContain(`> 11 |         test.expect("abc").toBe('abcd');`);
   expect(result.exitCode).toBe(1);
 });
 
@@ -131,9 +135,9 @@ test('should render stdout without ansi escapes', async ({ runInlineTest }) => {
     `,
   }, { reporter: '' });
   const xml = parseXML(result.output);
-  const suite = xml['testsuites']['testsuite'][0];
-  expect(suite['system-out'].length).toBe(1);
-  expect(suite['system-out'][0].trim()).toBe('Hello world');
+  const testcase = xml['testsuites']['testsuite'][0]['testcase'][0];
+  expect(testcase['system-out'].length).toBe(1);
+  expect(testcase['system-out'][0].trim()).toBe('Hello world');
   expect(result.exitCode).toBe(0);
 });
 
@@ -217,6 +221,32 @@ test('should render projects', async ({ runInlineTest }) => {
   expect(xml['testsuites']['testsuite'][1]['$']['skipped']).toBe('0');
   expect(xml['testsuites']['testsuite'][1]['testcase'][0]['$']['name']).toBe('one');
   expect(xml['testsuites']['testsuite'][1]['testcase'][0]['$']['classname']).toContain('[project2] › a.test.js:6:7 › one');
+  expect(result.exitCode).toBe(0);
+});
+
+test('should render existing attachments, but not missing ones', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'a.test.js': `
+      const { test } = pwt;
+      test.use({ screenshot: 'on' });
+      test('one', async ({ page }, testInfo) => {
+        await page.setContent('hello');
+        const file = testInfo.outputPath('file.txt');
+        require('fs').writeFileSync(file, 'my file', 'utf8');
+        testInfo.attachments.push({ name: 'my-file', path: file, contentType: 'text/plain' });
+        testInfo.attachments.push({ name: 'my-file-missing', path: file + '-missing', contentType: 'text/plain' });
+        console.log('log here');
+      });
+    `,
+  }, { reporter: 'junit' });
+  const xml = parseXML(result.output);
+  const testcase = xml['testsuites']['testsuite'][0]['testcase'][0];
+  expect(testcase['system-out'].length).toBe(1);
+  expect(testcase['system-out'][0].trim()).toBe([
+    `log here`,
+    `\n[[ATTACHMENT|test-results${path.sep}a-one${path.sep}file.txt]]`,
+    `\n[[ATTACHMENT|test-results${path.sep}a-one${path.sep}test-finished-1.png]]`,
+  ].join('\n'));
   expect(result.exitCode).toBe(0);
 });
 

@@ -32,7 +32,7 @@ import { Worker } from './worker';
 import { Frame, verifyLoadState, WaitForNavigationOptions } from './frame';
 import { Keyboard, Mouse, Touchscreen } from './input';
 import { assertMaxArguments, serializeArgument, parseResult, JSHandle } from './jsHandle';
-import { Request, Response, Route, RouteHandler, WebSocket, validateHeaders } from './network';
+import { Request, Response, Route, RouteHandlerCallback, WebSocket, validateHeaders, RouteHandler } from './network';
 import { FileChooser } from './fileChooser';
 import { Buffer } from 'buffer';
 import { Coverage } from './coverage';
@@ -47,6 +47,7 @@ import { isString, isRegExp, isObject, mkdirIfNeeded, headersObjectToArray } fro
 import { isSafeCloseError } from '../utils/errors';
 import { Video } from './video';
 import { Artifact } from './artifact';
+import { FetchRequest } from './fetch';
 
 type PDFOptions = Omit<channels.PagePdfParams, 'width' | 'height' | 'margin'> & {
   width?: string | number,
@@ -71,12 +72,13 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
   private _closed = false;
   _closedOrCrashedPromise: Promise<void>;
   private _viewportSize: Size | null;
-  private _routes: { url: URLMatch, handler: RouteHandler }[] = [];
+  private _routes: RouteHandler[] = [];
 
   readonly accessibility: Accessibility;
   readonly coverage: Coverage;
   readonly keyboard: Keyboard;
   readonly mouse: Mouse;
+  readonly _request: FetchRequest;
   readonly touchscreen: Touchscreen;
 
   readonly _bindings = new Map<string, (source: structs.BindingSource, ...args: any[]) => any>();
@@ -98,9 +100,10 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
     this._timeoutSettings = new TimeoutSettings(this._browserContext._timeoutSettings);
 
     this.accessibility = new Accessibility(this._channel);
-    this.keyboard = new Keyboard(this._channel);
-    this.mouse = new Mouse(this._channel);
-    this.touchscreen = new Touchscreen(this._channel);
+    this.keyboard = new Keyboard(this);
+    this.mouse = new Mouse(this);
+    this._request = this._browserContext._request;
+    this.touchscreen = new Touchscreen(this);
 
     this._mainFrame = Frame.from(initializer.mainFrame);
     this._mainFrame._page = this;
@@ -114,8 +117,13 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
     this._channel.on('console', ({ message }) => this.emit(Events.Page.Console, ConsoleMessage.from(message)));
     this._channel.on('crash', () => this._onCrash());
     this._channel.on('dialog', ({ dialog }) => {
-      if (!this.emit(Events.Page.Dialog, Dialog.from(dialog)))
-        dialog.dismiss().catch(() => {});
+      const dialogObj = Dialog.from(dialog);
+      if (!this.emit(Events.Page.Dialog, dialogObj)) {
+        if (dialogObj.type() === 'beforeunload')
+          dialog.accept({}).catch(() => {});
+        else
+          dialog.dismiss().catch(() => {});
+      }
     });
     this._channel.on('domcontentloaded', () => this.emit(Events.Page.DOMContentLoaded, this));
     this._channel.on('download', ({ url, suggestedFilename, artifact }) => {
@@ -161,9 +169,9 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
   }
 
   private _onRoute(route: Route, request: Request) {
-    for (const {url, handler} of this._routes) {
-      if (urlMatches(this._browserContext._options.baseURL, request.url(), url)) {
-        handler(route, request);
+    for (const routeHandler of this._routes) {
+      if (routeHandler.matches(request.url())) {
+        routeHandler.handle(route, request);
         return;
       }
     }
@@ -375,9 +383,7 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
   }
 
   async waitForEvent(event: string, optionsOrPredicate: WaitForEventOptions = {}): Promise<any> {
-    return this._wrapApiCall(async (channel: channels.PageChannel) => {
-      return this._waitForEvent(event, optionsOrPredicate, `waiting for event "${event}"`);
-    });
+    return this._waitForEvent(event, optionsOrPredicate, `waiting for event "${event}"`);
   }
 
   private async _waitForEvent(event: string, optionsOrPredicate: WaitForEventOptions, logLine?: string): Promise<any> {
@@ -410,12 +416,13 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
     });
   }
 
-  async emulateMedia(options: { media?: 'screen' | 'print' | null, colorScheme?: 'dark' | 'light' | 'no-preference' | null, reducedMotion?: 'reduce' | 'no-preference' | null } = {}) {
+  async emulateMedia(options: { media?: 'screen' | 'print' | null, colorScheme?: 'dark' | 'light' | 'no-preference' | null, reducedMotion?: 'reduce' | 'no-preference' | null, forcedColors?: 'active' | 'none' | null } = {}) {
     return this._wrapApiCall(async (channel: channels.PageChannel) => {
       await channel.emulateMedia({
         media: options.media === null ? 'null' : options.media,
         colorScheme: options.colorScheme === null ? 'null' : options.colorScheme,
         reducedMotion: options.reducedMotion === null ? 'null' : options.reducedMotion,
+        forcedColors: options.forcedColors === null ? 'null' : options.forcedColors,
       });
     });
   }
@@ -443,15 +450,15 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
     });
   }
 
-  async route(url: URLMatch, handler: RouteHandler): Promise<void> {
+  async route(url: URLMatch, handler: RouteHandlerCallback, options: { times?: number } = {}): Promise<void> {
     return this._wrapApiCall(async (channel: channels.PageChannel) => {
-      this._routes.unshift({ url, handler });
+      this._routes.unshift(new RouteHandler(this._browserContext._options.baseURL, url, handler, options.times));
       if (this._routes.length === 1)
         await channel.setNetworkInterceptionEnabled({ enabled: true });
     });
   }
 
-  async unroute(url: URLMatch, handler?: RouteHandler): Promise<void> {
+  async unroute(url: URLMatch, handler?: RouteHandlerCallback): Promise<void> {
     return this._wrapApiCall(async (channel: channels.PageChannel) => {
       this._routes = this._routes.filter(route => route.url !== url || (handler && route.handler !== handler));
       if (this._routes.length === 0)
@@ -487,9 +494,10 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
   async close(options: { runBeforeUnload?: boolean } = {runBeforeUnload: undefined}) {
     try {
       await this._wrapApiCall(async (channel: channels.PageChannel) => {
-        await channel.close(options);
         if (this._ownedContext)
           await this._ownedContext.close();
+        else
+          await channel.close(options);
       });
     } catch (e) {
       if (isSafeCloseError(e))
@@ -602,6 +610,10 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
     return this._mainFrame.uncheck(selector, options);
   }
 
+  async setChecked(selector: string, checked: boolean, options?: channels.FrameCheckOptions) {
+    return this._mainFrame.setChecked(selector, checked, options);
+  }
+
   async waitForTimeout(timeout: number) {
     return this._mainFrame.waitForTimeout(timeout);
   }
@@ -614,28 +626,28 @@ export class Page extends ChannelOwner<channels.PageChannel, channels.PageInitia
     return [...this._workers];
   }
 
-  on(event: string | symbol, listener: Listener): this {
+  override on(event: string | symbol, listener: Listener): this {
     if (event === Events.Page.FileChooser && !this.listenerCount(event))
       this._channel.setFileChooserInterceptedNoReply({ intercepted: true });
     super.on(event, listener);
     return this;
   }
 
-  addListener(event: string | symbol, listener: Listener): this {
+  override addListener(event: string | symbol, listener: Listener): this {
     if (event === Events.Page.FileChooser && !this.listenerCount(event))
       this._channel.setFileChooserInterceptedNoReply({ intercepted: true });
     super.addListener(event, listener);
     return this;
   }
 
-  off(event: string | symbol, listener: Listener): this {
+  override off(event: string | symbol, listener: Listener): this {
     super.off(event, listener);
     if (event === Events.Page.FileChooser && !this.listenerCount(event))
       this._channel.setFileChooserInterceptedNoReply({ intercepted: false });
     return this;
   }
 
-  removeListener(event: string | symbol, listener: Listener): this {
+  override removeListener(event: string | symbol, listener: Listener): this {
     super.removeListener(event, listener);
     if (event === Events.Page.FileChooser && !this.listenerCount(event))
       this._channel.setFileChooserInterceptedNoReply({ intercepted: false });

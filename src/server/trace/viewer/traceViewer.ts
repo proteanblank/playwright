@@ -49,11 +49,11 @@ export class TraceViewer {
     // - "/sha1/<sha1>" - trace resource bodies, used by network previews.
     //
     // Served by SnapshotServer
-    // - "/resources/<resourceId>" - network resources from the trace.
+    // - "/resources/" - network resources from the trace.
     // - "/snapshot/" - root for snapshot frame.
     // - "/snapshot/pageId/..." - actual snapshot html.
     // - "/snapshot/service-worker.js" - service worker that intercepts snapshot resources
-    //   and translates them into "/resources/<resourceId>".
+    //   and translates them into network requests.
     const actionTraces = fs.readdirSync(tracesDir).filter(name => name.endsWith('.trace'));
     const debugNames = actionTraces.map(name => {
       const tracePrefix = path.join(tracesDir, name.substring(0, name.indexOf('.trace')));
@@ -74,19 +74,17 @@ export class TraceViewer {
 
     const traceModelHandler: ServerRouteHandler = (request, response) => {
       const debugName = request.url!.substring('/context/'.length);
-      const tracePrefix = path.join(tracesDir, debugName);
       snapshotStorage.clear();
       response.statusCode = 200;
       response.setHeader('Content-Type', 'application/json');
       (async () => {
-        const fileStream = fs.createReadStream(tracePrefix + '.trace', 'utf8');
-        const rl = readline.createInterface({
-          input: fileStream,
-          crlfDelay: Infinity
-        });
+        const traceFile = path.join(tracesDir, debugName + '.trace');
+        const match = debugName.match(/^(.*)-\d+$/);
+        const networkFile = path.join(tracesDir, (match ? match[1] : debugName) + '.network');
         const model = new TraceModel(snapshotStorage);
-        for await (const line of rl as any)
-          model.appendEvent(line);
+        await appendTraceEvents(model, traceFile);
+        if (fs.existsSync(networkFile))
+          await appendTraceEvents(model, networkFile);
         model.build();
         response.end(JSON.stringify(model.contextEntry));
       })().catch(e => console.error(e));
@@ -126,7 +124,7 @@ export class TraceViewer {
   async show(headless: boolean): Promise<BrowserContext> {
     const urlPrefix = await this._server.start();
 
-    const traceViewerPlaywright = createPlaywright(true);
+    const traceViewerPlaywright = createPlaywright('javascript', true);
     const traceViewerBrowser = isUnderTest() ? 'chromium' : this._browserName;
     const args = traceViewerBrowser === 'chromium' ? [
       '--app=data:text/html,',
@@ -141,7 +139,7 @@ export class TraceViewer {
     if (traceViewerBrowser === 'chromium') {
       for (const name of ['chromium', 'chrome', 'msedge']) {
         try {
-          registry.findExecutable(name)!.executablePathOrDie();
+          registry.findExecutable(name)!.executablePathOrDie(traceViewerPlaywright.options.sdkLanguage);
           channel = name === 'chromium' ? undefined : name;
           break;
         } catch (e) {
@@ -161,7 +159,6 @@ Please run 'npx playwright install' to install Playwright browsers
     const context = await traceViewerPlaywright[traceViewerBrowser as 'chromium'].launchPersistentContext(internalCallMetadata(), '', {
       // TODO: store language in the trace.
       channel: channel as any,
-      sdkLanguage: 'javascript',
       args,
       noDefaultViewport: true,
       headless,
@@ -172,7 +169,7 @@ Please run 'npx playwright install' to install Playwright browsers
     await controller.run(async progress => {
       await context._browser._defaultContext!._loadDefaultContextAsIs(progress);
     });
-    await context.extendInjectedScript('main', consoleApiSource.source);
+    await context.extendInjectedScript(consoleApiSource.source);
     const [page] = context.pages();
 
     if (traceViewerBrowser === 'chromium')
@@ -186,6 +183,16 @@ Please run 'npx playwright install' to install Playwright browsers
     await page.mainFrame().goto(internalCallMetadata(), urlPrefix + '/traceviewer/traceViewer/index.html');
     return context;
   }
+}
+
+async function appendTraceEvents(model: TraceModel, file: string) {
+  const fileStream = fs.createReadStream(file, 'utf8');
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity
+  });
+  for await (const line of rl as any)
+    model.appendEvent(line);
 }
 
 export async function showTraceViewer(tracePath: string, browserName: string, headless = false): Promise<BrowserContext | undefined> {

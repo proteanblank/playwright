@@ -21,11 +21,16 @@ import { Frame } from './frame';
 import { Headers, RemoteAddr, SecurityDetails, WaitForEventOptions } from './types';
 import fs from 'fs';
 import * as mime from 'mime';
-import { isString, headersObjectToArray, headersArrayToObject } from '../utils/utils';
+import { isString, headersObjectToArray } from '../utils/utils';
+import { ManualPromise } from '../utils/async';
 import { Events } from './events';
 import { Page } from './page';
 import { Waiter } from './waiter';
 import * as api from '../../types/types';
+import { HeadersArray, URLMatch } from '../common/types';
+import { urlMatches } from './clientHelper';
+import { MultiMap } from '../utils/multimap';
+import { FetchResponse } from './fetch';
 
 export type NetworkCookie = {
   name: string,
@@ -54,7 +59,8 @@ export class Request extends ChannelOwner<channels.RequestChannel, channels.Requ
   private _redirectedFrom: Request | null = null;
   private _redirectedTo: Request | null = null;
   _failureText: string | null = null;
-  _headers: Headers;
+  private _provisionalHeaders: RawHeaders;
+  private _actualHeadersPromise: Promise<RawHeaders> | undefined;
   private _postData: Buffer | null;
   _timing: ResourceTiming;
 
@@ -71,7 +77,7 @@ export class Request extends ChannelOwner<channels.RequestChannel, channels.Requ
     this._redirectedFrom = Request.fromNullable(initializer.redirectedFrom);
     if (this._redirectedFrom)
       this._redirectedFrom._redirectedTo = this;
-    this._headers = headersArrayToObject(initializer.headers, true /* lowerCase */);
+    this._provisionalHeaders = new RawHeaders(initializer.headers);
     this._postData = initializer.postData ? Buffer.from(initializer.postData, 'base64') : null;
     this._timing = {
       startTime: 0,
@@ -127,8 +133,37 @@ export class Request extends ChannelOwner<channels.RequestChannel, channels.Requ
     }
   }
 
+  /**
+   * @deprecated
+   */
   headers(): Headers {
-    return { ...this._headers };
+    return this._provisionalHeaders.headers();
+  }
+
+  _actualHeaders(): Promise<RawHeaders> {
+    if (!this._actualHeadersPromise) {
+      this._actualHeadersPromise = this.response().then(response => {
+        // there is no response, so should we return the headers we have now?
+        if (!response)
+          return this._provisionalHeaders;
+        return response._wrapApiCall(async (channel: channels.ResponseChannel) => {
+          return new RawHeaders((await channel.rawRequestHeaders()).headers);
+        });
+      });
+    }
+    return this._actualHeadersPromise;
+  }
+
+  async allHeaders(): Promise<Headers> {
+    return (await this._actualHeaders()).headers();
+  }
+
+  async headersArray(): Promise<HeadersArray> {
+    return (await this._actualHeaders()).headersArray();
+  }
+
+  async headerValue(name: string): Promise<string | null> {
+    return (await this._actualHeaders()).get(name);
   }
 
   async response(): Promise<Response | null> {
@@ -165,6 +200,15 @@ export class Request extends ChannelOwner<channels.RequestChannel, channels.Requ
     return this._timing;
   }
 
+  async sizes(): Promise<RequestSizes> {
+    const response = await this.response();
+    if (!response)
+      throw new Error('Unable to fetch sizes for failed request');
+    return response._wrapApiCall(async (channel: channels.ResponseChannel) => {
+      return (await channel.sizes()).sizes;
+    });
+  }
+
   _finalRequest(): Request {
     return this._redirectedTo ? this._redirectedTo._finalRequest() : this;
   }
@@ -174,12 +218,12 @@ export class InterceptedResponse implements api.Response {
   private readonly _route: Route;
   private readonly _initializer: channels.InterceptedResponse;
   private readonly _request: Request;
-  private readonly _headers: Headers;
+  private readonly _headers: RawHeaders;
 
   constructor(route: Route, initializer: channels.InterceptedResponse) {
     this._route = route;
     this._initializer = initializer;
-    this._headers = headersArrayToObject(initializer.headers, true /* lowerCase */);
+    this._headers = new RawHeaders(initializer.headers);
     this._request = Request.from(initializer.request);
   }
 
@@ -219,7 +263,23 @@ export class InterceptedResponse implements api.Response {
   }
 
   headers(): Headers {
-    return { ...this._headers };
+    return this._headers.headers();
+  }
+
+  async allHeaders(): Promise<Headers> {
+    return this.headers();
+  }
+
+  async headersArray(): Promise<HeadersArray> {
+    return this._headers.headersArray();
+  }
+
+  async headerValue(name: string): Promise<string | null> {
+    return this._headers.get(name);
+  }
+
+  async headerValues(name: string): Promise<string[]> {
+    return this._headers.getAll(name);
   }
 
   async body(): Promise<Buffer> {
@@ -245,6 +305,8 @@ type InterceptResponse = true;
 type NotInterceptResponse = false;
 
 export class Route extends ChannelOwner<channels.RouteChannel, channels.RouteInitializer> implements api.Route {
+  private _interceptedResponse: api.Response | undefined;
+
   static from(route: channels.RouteChannel): Route {
     return (route as any)._object;
   }
@@ -263,9 +325,25 @@ export class Route extends ChannelOwner<channels.RouteChannel, channels.RouteIni
     });
   }
 
-  async fulfill(options: { status?: number, headers?: Headers, contentType?: string, body?: string | Buffer, path?: string } = {}) {
+  async fulfill(options: { response?: api.Response | api.FetchResponse, status?: number, headers?: Headers, contentType?: string, body?: string | Buffer, path?: string } = {}) {
     return this._wrapApiCall(async (channel: channels.RouteChannel) => {
-      let body = '';
+      let useInterceptedResponseBody;
+      let fetchResponseUid;
+      let { status: statusOption, headers: headersOption, body: bodyOption } = options;
+      if (options.response) {
+        statusOption ||= options.response.status();
+        headersOption ||= options.response.headers();
+        if (options.body === undefined && options.path === undefined) {
+          if (options.response instanceof FetchResponse)
+            fetchResponseUid = (options.response as FetchResponse)._fetchUid();
+          else if (options.response === this._interceptedResponse)
+            useInterceptedResponseBody = true;
+          else
+            bodyOption = await options.response.body();
+        }
+      }
+
+      let body = undefined;
       let isBase64 = false;
       let length = 0;
       if (options.path) {
@@ -273,19 +351,19 @@ export class Route extends ChannelOwner<channels.RouteChannel, channels.RouteIni
         body = buffer.toString('base64');
         isBase64 = true;
         length = buffer.length;
-      } else if (isString(options.body)) {
-        body = options.body;
+      } else if (isString(bodyOption)) {
+        body = bodyOption;
         isBase64 = false;
         length = Buffer.byteLength(body);
-      } else if (options.body) {
-        body = options.body.toString('base64');
+      } else if (bodyOption) {
+        body = bodyOption.toString('base64');
         isBase64 = true;
-        length = options.body.length;
+        length = bodyOption.length;
       }
 
       const headers: Headers = {};
-      for (const header of Object.keys(options.headers || {}))
-        headers[header.toLowerCase()] = String(options.headers![header]);
+      for (const header of Object.keys(headersOption || {}))
+        headers[header.toLowerCase()] = String(headersOption![header]);
       if (options.contentType)
         headers['content-type'] = String(options.contentType);
       else if (options.path)
@@ -294,16 +372,19 @@ export class Route extends ChannelOwner<channels.RouteChannel, channels.RouteIni
         headers['content-length'] = String(length);
 
       await channel.fulfill({
-        status: options.status || 200,
+        status: statusOption || 200,
         headers: headersObjectToArray(headers),
         body,
-        isBase64
+        isBase64,
+        useInterceptedResponseBody,
+        fetchResponseUid
       });
     });
   }
 
-  async _intercept(options: { url?: string, method?: string, headers?: Headers, postData?: string | Buffer, interceptResponse?: boolean } = {}): Promise<api.Response> {
-    return await this._continue(options, true);
+  async _continueToResponse(options: { url?: string, method?: string, headers?: Headers, postData?: string | Buffer, interceptResponse?: boolean } = {}): Promise<api.Response> {
+    this._interceptedResponse = await this._continue(options, true);
+    return this._interceptedResponse;
   }
 
   async continue(options: { url?: string, method?: string, headers?: Headers, postData?: string | Buffer } = {}) {
@@ -335,7 +416,7 @@ export class Route extends ChannelOwner<channels.RouteChannel, channels.RouteIni
   }
 }
 
-export type RouteHandler = (route: Route, request: Request) => void;
+export type RouteHandlerCallback = (route: Route, request: Request) => void;
 
 export type ResourceTiming = {
   startTime: number;
@@ -349,9 +430,18 @@ export type ResourceTiming = {
   responseEnd: number;
 };
 
+export type RequestSizes = {
+  requestBodySize: number;
+  requestHeadersSize: number;
+  responseBodySize: number;
+  responseHeadersSize: number;
+};
+
 export class Response extends ChannelOwner<channels.ResponseChannel, channels.ResponseInitializer> implements api.Response {
-  private _headers: Headers;
+  private _provisionalHeaders: RawHeaders;
+  private _actualHeadersPromise: Promise<RawHeaders> | undefined;
   private _request: Request;
+  readonly _finishedPromise = new ManualPromise<void>();
 
   static from(response: channels.ResponseChannel): Response {
     return (response as any)._object;
@@ -363,9 +453,8 @@ export class Response extends ChannelOwner<channels.ResponseChannel, channels.Re
 
   constructor(parent: ChannelOwner, type: string, guid: string, initializer: channels.ResponseInitializer) {
     super(parent, type, guid, initializer);
-    this._headers = headersArrayToObject(initializer.headers, true /* lowerCase */);
+    this._provisionalHeaders = new RawHeaders(initializer.headers);
     this._request = Request.from(this._initializer.request);
-    this._request._headers = headersArrayToObject(initializer.requestHeaders, true /* lowerCase */);
     Object.assign(this._request._timing, this._initializer.timing);
   }
 
@@ -385,17 +474,40 @@ export class Response extends ChannelOwner<channels.ResponseChannel, channels.Re
     return this._initializer.statusText;
   }
 
+  /**
+   * @deprecated
+   */
   headers(): Headers {
-    return { ...this._headers };
+    return this._provisionalHeaders.headers();
   }
 
-  async finished(): Promise<Error | null> {
-    return this._wrapApiCall(async (channel: channels.ResponseChannel) => {
-      const result = await channel.finished();
-      if (result.error)
-        return new Error(result.error);
-      return null;
-    });
+  async _actualHeaders(): Promise<RawHeaders> {
+    if (!this._actualHeadersPromise) {
+      this._actualHeadersPromise = this._wrapApiCall(async (channel: channels.ResponseChannel) => {
+        return new RawHeaders((await channel.rawResponseHeaders()).headers);
+      });
+    }
+    return this._actualHeadersPromise;
+  }
+
+  async allHeaders(): Promise<Headers> {
+    return (await this._actualHeaders()).headers();
+  }
+
+  async headersArray(): Promise<HeadersArray> {
+    return (await this._actualHeaders()).headersArray().slice();
+  }
+
+  async headerValue(name: string): Promise<string | null> {
+    return (await this._actualHeaders()).get(name);
+  }
+
+  async headerValues(name: string): Promise<string[]> {
+    return (await this._actualHeaders()).getAll(name);
+  }
+
+  async finished(): Promise<null> {
+    return this._finishedPromise.then(() => null);
   }
 
   async body(): Promise<Buffer> {
@@ -497,5 +609,64 @@ export function validateHeaders(headers: Headers) {
     const value = headers[key];
     if (!Object.is(value, undefined) && !isString(value))
       throw new Error(`Expected value of header "${key}" to be String, but "${typeof value}" is found.`);
+  }
+}
+
+export class RouteHandler {
+  private handledCount = 0;
+  private readonly _baseURL: string | undefined;
+  private readonly _times: number | undefined;
+  readonly url: URLMatch;
+  readonly handler: RouteHandlerCallback;
+
+  constructor(baseURL: string | undefined, url: URLMatch, handler: RouteHandlerCallback, times?: number) {
+    this._baseURL = baseURL;
+    this._times = times;
+    this.url = url;
+    this.handler = handler;
+  }
+
+  public matches(requestURL: string): boolean {
+    if (this._times && this.handledCount >= this._times)
+      return false;
+    return urlMatches(this._baseURL, requestURL, this.url);
+  }
+
+  public handle(route: Route, request: Request) {
+    this.handler(route, request);
+    this.handledCount++;
+  }
+}
+
+export class RawHeaders {
+  private _headersArray: HeadersArray;
+  private _headersMap = new MultiMap<string, string>();
+
+  constructor(headers: HeadersArray) {
+    this._headersArray = headers;
+    for (const header of headers)
+      this._headersMap.set(header.name.toLowerCase(), header.value);
+  }
+
+  get(name: string): string | null {
+    const values = this.getAll(name);
+    if (!values || !values.length)
+      return null;
+    return values.join(name.toLowerCase() === 'set-cookie' ? '\n' : ', ');
+  }
+
+  getAll(name: string): string[] {
+    return [...this._headersMap.get(name.toLowerCase())];
+  }
+
+  headers(): Headers {
+    const result: Headers = {};
+    for (const name of this._headersMap.keys())
+      result[name] = this.get(name)!;
+    return result;
+  }
+
+  headersArray(): HeadersArray {
+    return this._headersArray;
   }
 }

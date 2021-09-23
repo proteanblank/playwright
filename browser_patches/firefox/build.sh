@@ -2,7 +2,7 @@
 set -e
 set +x
 
-RUST_VERSION="1.49.0"
+RUST_VERSION="1.51.0"
 CBINDGEN_VERSION="0.19.0"
 # Certain minimal SDK Version is required by firefox
 MACOS_SDK_VERSION="10.12"
@@ -11,7 +11,7 @@ XCODE_VERSION_WITH_REQUIRED_SDK_VERSION="8.3.3"
 
 trap "cd $(pwd -P)" EXIT
 
-cd "$(dirname $0)"
+cd "$(dirname "$0")"
 SCRIPT_FOLDER="$(pwd -P)"
 source "${SCRIPT_FOLDER}/../utils.sh"
 
@@ -81,6 +81,28 @@ fi
 OBJ_FOLDER="obj-build-playwright"
 echo "mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/${OBJ_FOLDER}" >> .mozconfig
 echo "ac_add_options --disable-crashreporter" >> .mozconfig
+echo "ac_add_options --disable-backgroundtasks" >> .mozconfig
+
+if [[ "$(uname)" == MINGW* || "$(uname)" == "Darwin" ]]; then
+  # This options is only available on win and mac.
+  echo "ac_add_options --disable-update-agent" >> .mozconfig
+fi
+
+if [[ $1 != "--juggler" ]]; then
+  # TODO: rustup is not in the PATH on Windows
+  if command -v rustup >/dev/null; then
+    # We manage Rust version ourselves.
+    echo "-- Using rust v${RUST_VERSION}"
+    rustup install "${RUST_VERSION}"
+    rustup default "${RUST_VERSION}"
+  fi
+
+  # TODO: cargo is not in the PATH on Windows
+  if command -v cargo >/dev/null; then
+    echo "-- Using cbindgen v${CBINDGEN_VERSION}"
+    cargo install cbindgen --version "${CBINDGEN_VERSION}"
+  fi
+fi
 
 if [[ $1 == "--full" || $2 == "--full" ]]; then
   if [[ "$(uname)" == "Darwin" || "$(uname)" == "Linux" ]]; then
@@ -99,25 +121,12 @@ fi
 if [[ $1 == "--juggler" ]]; then
   ./mach build faster
 else
-  # TODO: rustup is not in the PATH on Windows
-  if command -v rustup >/dev/null; then
-    # We manage Rust version ourselves.
-    echo "-- Using rust v${RUST_VERSION}"
-    rustup install "${RUST_VERSION}"
-    rustup default "${RUST_VERSION}"
-  fi
-
-  # TODO: cargo is not in the PATH on Windows
-  if command -v cargo >/dev/null; then
-    echo "-- Using cbindgen v${CBINDGEN_VERSION}"
-    cargo install cbindgen --version "${CBINDGEN_VERSION}"
-  fi
   ./mach build
 fi
 
 if [[ "$(uname)" == "Darwin" ]]; then
-  node "${SCRIPT_FOLDER}"/install-preferences.js $PWD/${OBJ_FOLDER}/dist
+  node "${SCRIPT_FOLDER}"/install-preferences.js "$PWD"/${OBJ_FOLDER}/dist
 else
-  node "${SCRIPT_FOLDER}"/install-preferences.js $PWD/${OBJ_FOLDER}/dist/bin
+  node "${SCRIPT_FOLDER}"/install-preferences.js "$PWD"/${OBJ_FOLDER}/dist/bin
 fi
 

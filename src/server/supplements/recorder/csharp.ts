@@ -18,7 +18,7 @@ import type { BrowserContextOptions } from '../../../..';
 import { LanguageGenerator, LanguageGeneratorOptions, sanitizeDeviceOptions, toSignalMap } from './language';
 import { ActionInContext } from './codeGenerator';
 import { actionTitle, Action } from './recorderActions';
-import { MouseClickOptions, toModifiers } from './utils';
+import { escapeWithQuotes, MouseClickOptions, toModifiers } from './utils';
 import deviceDescriptors from '../../deviceDescriptors';
 
 export class CSharpLanguageGenerator implements LanguageGenerator {
@@ -84,7 +84,7 @@ export class CSharpLanguageGenerator implements LanguageGenerator {
       formatter.add(line);
 
     if (signals.assertNavigation)
-      formatter.add(`  // Assert.Equal(${quote(signals.assertNavigation.url)}, ${pageAlias}.Url);`);
+      formatter.add(`  // Assert.AreEqual(${quote(signals.assertNavigation.url)}, ${pageAlias}.Url);`);
     return formatter.format();
   }
 
@@ -266,5 +266,5 @@ class CSharpFormatter {
 }
 
 function quote(text: string) {
-  return `"${text.replace(/["]/g, '\\"')}"`;
+  return escapeWithQuotes(text, '\"');
 }

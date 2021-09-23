@@ -39,7 +39,7 @@ configurations for common CI providers.
 
 ## CI configurations
 
-The [Command Line Interface](./cli.md#install-system-dependencies) can be used to install all operating system dependencies on GitHub Actions.
+The [Command line tools](./cli.md#install-system-dependencies) can be used to install all operating system dependencies on GitHub Actions.
 
 ### GitHub Actions
 
@@ -75,6 +75,36 @@ steps:
 ```
 
 We run [our tests](https://github.com/microsoft/playwright/blob/master/.github/workflows/tests_secondary.yml) on GitHub Actions, across a matrix of 3 platforms (Windows, Linux, macOS) and 3 browsers (Chromium, Firefox, WebKit).
+
+### GitHub Actions on deployment
+
+This will start the tests after a [GitHub Deployment](https://developer.github.com/v3/repos/deployments/) went into the `success` state.
+Services like Azure Static Web Apps, Netlify, Vercel, etc. use this pattern so you can run your end-to-end tests on their deployed enviornment.
+
+```yml
+name: Playwright Tests
+on:
+  deployment_status:
+jobs:
+  test:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    if: github.event.deployment_status.state == 'success'
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-node@v2
+      with:
+        node-version: '14.x'
+    - name: Install dependencies
+      run: npm ci
+    - name: Install Playwright
+      run: npx playwright install --with-deps
+    - name: Run Playwright tests
+      run: npm run test:e2e
+      env:
+        # This might depend on your test-runner/language binding
+        PLAYWRIGHT_TEST_BASE_URL: ${{ github.event.deployment_status.target_url }}
+```
 
 ### Docker
 
@@ -312,7 +342,7 @@ tests:
 
 By default, Playwright downloads browser binaries when the Playwright NPM package
 is installed. The NPM packages have a `postinstall` hook that downloads the browser
-binaries. This behavior can be [customized with environment variables][installation-managing-browser-binaries].
+binaries. This behavior can be [customized with environment variables](./browsers.md#managing-browser-binaries).
 
 Caching browsers on CI is **strictly optional**: The `postinstall` hooks should
 execute and download the browser binaries on every run.
@@ -333,7 +363,7 @@ This behavior can be fixed with one of the following approaches:
    behavior in most CI providers.)
 1. Set `PLAYWRIGHT_BROWSERS_PATH=0` as the environment variable before running
    `npm install`. This will download the browser binaries in the `node_modules`
-   directory and cache them with the package code. See [managing browser binaries][installation-managing-browser-binaries].
+   directory and cache them with the package code. See [managing browser binaries](./browsers.md#managing-browser-binaries).
 1. Use `npm ci` (instead of `npm install`) which forces a clean install: by
    removing the existing `node_modules` directory. See [npm docs](https://docs.npmjs.com/cli/ci.html).
 1. Cache the browser binaries, with the steps below.

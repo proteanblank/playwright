@@ -95,6 +95,67 @@ await locator.HoverAsync();
 await locator.ClickAsync();
 ```
 
+**Strictness**
+
+Locators are strict. This means that all operations on locators that imply
+some target DOM element will throw if more than one element matches given
+selector.
+
+```js
+// Throws if there are several buttons in DOM:
+await page.locator('button').click();
+
+// Works because we explicitly tell locator to pick the first element:
+await page.locator('button').first().click();
+
+// Works because count knows what to do with multiple matches:
+await page.locator('button').count();
+```
+
+```python async
+# Throws if there are several buttons in DOM:
+await page.locator('button').click()
+
+# Works because we explicitly tell locator to pick the first element:
+await page.locator('button').first.click()
+
+# Works because count knows what to do with multiple matches:
+await page.locator('button').count()
+```
+
+```python sync
+# Throws if there are several buttons in DOM:
+page.locator('button').click()
+
+# Works because we explicitly tell locator to pick the first element:
+page.locator('button').first.click()
+
+# Works because count knows what to do with multiple matches:
+page.locator('button').count()
+```
+
+```java
+// Throws if there are several buttons in DOM:
+page.locator("button").click();
+
+// Works because we explicitly tell locator to pick the first element:
+page.locator("button").first().click();
+
+// Works because count knows what to do with multiple matches:
+page.locator("button").count();
+```
+
+```csharp
+// Throws if there are several buttons in DOM:
+await page.Locator("button").ClickAsync();
+
+// Works because we explicitly tell locator to pick the first element:
+await page.Locator("button").First.ClickAsync();
+
+// Works because Count knows what to do with multiple matches:
+await page.Locator("button").CountAsync();
+```
+
 ## async method: Locator.allInnerTexts
 - returns: <[Array]<[string]>>
 
@@ -344,7 +405,7 @@ its value.
 Examples:
 
 ```js
-const tweets = await page.locator('.tweet .retweets');
+const tweets = page.locator('.tweet .retweets');
 expect(await tweets.evaluate(node => node.innerText)).toBe('10 retweets');
 ```
 
@@ -354,7 +415,7 @@ assertEquals("10 retweets", tweets.evaluate("node => node.innerText"));
 ```
 
 ```python async
-tweets = await page.locator(".tweet .retweets")
+tweets = page.locator(".tweet .retweets")
 assert await tweets.evaluate("node => node.innerText") == "10 retweets"
 ```
 
@@ -383,7 +444,7 @@ Optional argument to pass to [`param: expression`].
 The method finds all elements matching the specified locator and passes an array of matched elements as
 a first argument to [`param: expression`]. Returns the result of [`param: expression`] invocation.
 
-If [`param: expression`] returns a [Promise], then [`Locator.evaluateAll`] would wait for the promise
+If [`param: expression`] returns a [Promise], then [`method: Locator.evaluateAll`] would wait for the promise
 to resolve and return its value.
 
 Examples:
@@ -557,14 +618,20 @@ Returns whether the element is [enabled](./actionability.md#enabled).
 
 Returns whether the element is hidden, the opposite of [visible](./actionability.md#visible).
 
-### option: Locator.isHidden.timeout = %%-input-timeout-%%
+### option: Locator.isHidden.timeout
+- `timeout` <[float]>
+
+**DEPRECATED** This option is ignored. [`method: Locator.isHidden`] does not wait for the element to become hidden and returns immediately.
 
 ## async method: Locator.isVisible
 - returns: <[boolean]>
 
 Returns whether the element is [visible](./actionability.md#visible).
 
-### option: Locator.isVisible.timeout = %%-input-timeout-%%
+### option: Locator.isVisible.timeout
+- `timeout` <[float]>
+
+**DEPRECATED** This option is ignored. [`method: Locator.isVisible`] does not wait for the element to become visible and returns immediately.
 
 ## method: Locator.last
 - returns: <[Locator]>
@@ -747,6 +814,28 @@ content.
 
 ### option: Locator.selectText.force = %%-input-force-%%
 ### option: Locator.selectText.timeout = %%-input-timeout-%%
+
+## async method: Locator.setChecked
+
+This method checks or unchecks an element by performing the following steps:
+1. Ensure that matched element is a checkbox or a radio input. If not, this method throws.
+1. If the element already has the right checked state, this method returns immediately.
+1. Wait for [actionability](./actionability.md) checks on the matched element, unless [`option: force`] option is
+   set. If the element is detached during the checks, the whole action is retried.
+1. Scroll the element into view if needed.
+1. Use [`property: Page.mouse`] to click in the center of the element.
+1. Wait for initiated navigations to either succeed or fail, unless [`option: noWaitAfter`] option is set.
+1. Ensure that the element is now checked or unchecked. If not, this method throws.
+
+When all steps combined have not finished during the specified [`option: timeout`], this method throws a
+[TimeoutError]. Passing zero timeout disables this.
+
+### param: Locator.setChecked.checked = %%-input-checked-%%
+### option: Locator.setChecked.force = %%-input-force-%%
+### option: Locator.setChecked.noWaitAfter = %%-input-no-wait-after-%%
+### option: Locator.setChecked.position = %%-input-position-%%
+### option: Locator.setChecked.timeout = %%-input-timeout-%%
+### option: Locator.setChecked.trial = %%-input-trial-%%
 
 ## async method: Locator.setInputFiles
 

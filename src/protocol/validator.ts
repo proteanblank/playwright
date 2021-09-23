@@ -42,6 +42,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
   scheme.Metadata = tObject({
     stack: tOptional(tArray(tType('StackFrame'))),
     apiName: tOptional(tString),
+    collectLogs: tOptional(tBoolean),
   });
   scheme.Point = tObject({
     x: tNumber,
@@ -73,6 +74,14 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
   scheme.SerializedArgument = tObject({
     value: tType('SerializedValue'),
     handles: tArray(tChannel('*')),
+  });
+  scheme.ExpectedTextValue = tObject({
+    string: tOptional(tString),
+    regexSource: tOptional(tString),
+    regexFlags: tOptional(tString),
+    matchSubstring: tOptional(tBoolean),
+    normalizeWhiteSpace: tOptional(tBoolean),
+    useInnerText: tOptional(tBoolean),
   });
   scheme.AXNode = tObject({
     role: tString,
@@ -144,18 +153,82 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     request: tChannel('Request'),
     status: tNumber,
     statusText: tString,
-    headers: tArray(tObject({
-      name: tString,
-      value: tString,
-    })),
+    headers: tArray(tType('NameValue')),
   });
-  scheme.PlaywrightSetForwardedPortsParams = tObject({
-    ports: tArray(tNumber),
+  scheme.FetchRequestFetchParams = tObject({
+    url: tString,
+    params: tOptional(tArray(tType('NameValue'))),
+    method: tOptional(tString),
+    headers: tOptional(tArray(tType('NameValue'))),
+    postData: tOptional(tBinary),
+    formData: tOptional(tAny),
+    timeout: tOptional(tNumber),
+    failOnStatusCode: tOptional(tBoolean),
+  });
+  scheme.FetchRequestFetchResponseBodyParams = tObject({
+    fetchUid: tString,
+  });
+  scheme.FetchRequestDisposeFetchResponseParams = tObject({
+    fetchUid: tString,
+  });
+  scheme.FetchRequestDisposeParams = tOptional(tObject({}));
+  scheme.FetchResponse = tObject({
+    fetchUid: tString,
+    url: tString,
+    status: tNumber,
+    statusText: tString,
+    headers: tArray(tType('NameValue')),
+  });
+  scheme.RootInitializeParams = tObject({
+    sdkLanguage: tString,
+  });
+  scheme.PlaywrightSocksConnectedParams = tObject({
+    uid: tString,
+    host: tString,
+    port: tNumber,
+  });
+  scheme.PlaywrightSocksFailedParams = tObject({
+    uid: tString,
+    errorCode: tString,
+  });
+  scheme.PlaywrightSocksDataParams = tObject({
+    uid: tString,
+    data: tBinary,
+  });
+  scheme.PlaywrightSocksErrorParams = tObject({
+    uid: tString,
+    error: tString,
+  });
+  scheme.PlaywrightSocksEndParams = tObject({
+    uid: tString,
+  });
+  scheme.PlaywrightNewRequestParams = tObject({
+    baseURL: tOptional(tString),
+    userAgent: tOptional(tString),
+    ignoreHTTPSErrors: tOptional(tBoolean),
+    extraHTTPHeaders: tOptional(tArray(tType('NameValue'))),
+    httpCredentials: tOptional(tObject({
+      username: tString,
+      password: tString,
+    })),
+    proxy: tOptional(tObject({
+      server: tString,
+      bypass: tOptional(tString),
+      username: tOptional(tString),
+      password: tOptional(tString),
+    })),
+    timeout: tOptional(tNumber),
   });
   scheme.SelectorsRegisterParams = tObject({
     name: tString,
     source: tString,
     contentScript: tOptional(tBoolean),
+  });
+  scheme.BrowserTypeConnectParams = tObject({
+    wsEndpoint: tString,
+    headers: tOptional(tAny),
+    slowMo: tOptional(tNumber),
+    timeout: tOptional(tNumber),
   });
   scheme.BrowserTypeLaunchParams = tObject({
     channel: tOptional(tString),
@@ -204,7 +277,6 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     downloadsPath: tOptional(tString),
     tracesDir: tOptional(tString),
     chromiumSandbox: tOptional(tBoolean),
-    sdkLanguage: tString,
     noDefaultViewport: tOptional(tBoolean),
     viewport: tOptional(tObject({
       width: tNumber,
@@ -237,6 +309,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     hasTouch: tOptional(tBoolean),
     colorScheme: tOptional(tEnum(['dark', 'light', 'no-preference'])),
     reducedMotion: tOptional(tEnum(['reduce', 'no-preference'])),
+    forcedColors: tOptional(tEnum(['active', 'none'])),
     acceptDownloads: tOptional(tBoolean),
     baseURL: tOptional(tString),
     _debugName: tOptional(tString),
@@ -251,11 +324,11 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
       omitContent: tOptional(tBoolean),
       path: tString,
     })),
+    strictSelectors: tOptional(tBoolean),
     userDataDir: tString,
     slowMo: tOptional(tNumber),
   });
   scheme.BrowserTypeConnectOverCDPParams = tObject({
-    sdkLanguage: tString,
     endpointURL: tString,
     headers: tOptional(tArray(tType('NameValue'))),
     slowMo: tOptional(tNumber),
@@ -264,7 +337,6 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
   scheme.BrowserCloseParams = tOptional(tObject({}));
   scheme.BrowserKillForTestsParams = tOptional(tObject({}));
   scheme.BrowserNewContextParams = tObject({
-    sdkLanguage: tString,
     noDefaultViewport: tOptional(tBoolean),
     viewport: tOptional(tObject({
       width: tNumber,
@@ -297,6 +369,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     hasTouch: tOptional(tBoolean),
     colorScheme: tOptional(tEnum(['dark', 'light', 'no-preference'])),
     reducedMotion: tOptional(tEnum(['reduce', 'no-preference'])),
+    forcedColors: tOptional(tEnum(['active', 'none'])),
     acceptDownloads: tOptional(tBoolean),
     baseURL: tOptional(tString),
     _debugName: tOptional(tString),
@@ -311,6 +384,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
       omitContent: tOptional(tBoolean),
       path: tString,
     })),
+    strictSelectors: tOptional(tBoolean),
     proxy: tOptional(tObject({
       server: tString,
       bypass: tOptional(tString),
@@ -406,15 +480,20 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     outputFile: tOptional(tString),
   });
   scheme.BrowserContextNewCDPSessionParams = tObject({
-    page: tChannel('Page'),
+    page: tOptional(tChannel('Page')),
+    frame: tOptional(tChannel('Frame')),
   });
   scheme.BrowserContextTracingStartParams = tObject({
     name: tOptional(tString),
     snapshots: tOptional(tBoolean),
     screenshots: tOptional(tBoolean),
   });
+  scheme.BrowserContextTracingStartChunkParams = tOptional(tObject({}));
+  scheme.BrowserContextTracingStopChunkParams = tObject({
+    save: tBoolean,
+  });
   scheme.BrowserContextTracingStopParams = tOptional(tObject({}));
-  scheme.BrowserContextTracingExportParams = tOptional(tObject({}));
+  scheme.BrowserContextHarExportParams = tOptional(tObject({}));
   scheme.PageSetDefaultNavigationTimeoutNoReplyParams = tObject({
     timeout: tNumber,
   });
@@ -434,6 +513,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     media: tOptional(tEnum(['screen', 'print', 'null'])),
     colorScheme: tOptional(tEnum(['dark', 'light', 'no-preference', 'null'])),
     reducedMotion: tOptional(tEnum(['reduce', 'no-preference', 'null'])),
+    forcedColors: tOptional(tEnum(['active', 'none', 'null'])),
   });
   scheme.PageExposeBindingParams = tObject({
     name: tString,
@@ -507,6 +587,10 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     delay: tOptional(tNumber),
     button: tOptional(tEnum(['left', 'right', 'middle'])),
     clickCount: tOptional(tNumber),
+  });
+  scheme.PageMouseWheelParams = tObject({
+    deltaX: tNumber,
+    deltaY: tNumber,
   });
   scheme.PageTouchscreenTapParams = tObject({
     x: tNumber,
@@ -697,12 +781,10 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
   scheme.FrameIsHiddenParams = tObject({
     selector: tString,
     strict: tOptional(tBoolean),
-    timeout: tOptional(tNumber),
   });
   scheme.FrameIsVisibleParams = tObject({
     selector: tString,
     strict: tOptional(tBoolean),
-    timeout: tOptional(tNumber),
   });
   scheme.FrameIsEditableParams = tObject({
     selector: tString,
@@ -723,7 +805,6 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
   });
   scheme.FrameQuerySelectorAllParams = tObject({
     selector: tString,
-    strict: tOptional(tBoolean),
   });
   scheme.FrameSelectOptionParams = tObject({
     selector: tString,
@@ -787,6 +868,9 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     timeout: tOptional(tNumber),
     trial: tOptional(tBoolean),
   });
+  scheme.FrameWaitForTimeoutParams = tObject({
+    timeout: tNumber,
+  });
   scheme.FrameWaitForFunctionParams = tObject({
     expression: tString,
     isFunction: tOptional(tBoolean),
@@ -799,6 +883,14 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     strict: tOptional(tBoolean),
     timeout: tOptional(tNumber),
     state: tOptional(tEnum(['attached', 'detached', 'visible', 'hidden'])),
+  });
+  scheme.FrameExpectParams = tObject({
+    selector: tString,
+    expression: tString,
+    expected: tOptional(tType('ExpectedTextValue')),
+    isNot: tOptional(tBoolean),
+    data: tOptional(tAny),
+    timeout: tOptional(tNumber),
   });
   scheme.WorkerEvaluateExpressionParams = tObject({
     expression: tString,
@@ -1000,6 +1092,8 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     headers: tOptional(tArray(tType('NameValue'))),
     body: tOptional(tString),
     isBase64: tOptional(tBoolean),
+    useInterceptedResponseBody: tOptional(tBoolean),
+    fetchResponseUid: tOptional(tString),
   });
   scheme.RouteResponseBodyParams = tOptional(tObject({}));
   scheme.ResourceTiming = tObject({
@@ -1013,15 +1107,23 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     responseStart: tNumber,
   });
   scheme.ResponseBodyParams = tOptional(tObject({}));
-  scheme.ResponseFinishedParams = tOptional(tObject({}));
   scheme.ResponseSecurityDetailsParams = tOptional(tObject({}));
   scheme.ResponseServerAddrParams = tOptional(tObject({}));
+  scheme.ResponseRawRequestHeadersParams = tOptional(tObject({}));
+  scheme.ResponseRawResponseHeadersParams = tOptional(tObject({}));
+  scheme.ResponseSizesParams = tOptional(tObject({}));
   scheme.SecurityDetails = tObject({
     issuer: tOptional(tString),
     protocol: tOptional(tString),
     subjectName: tOptional(tString),
     validFrom: tOptional(tNumber),
     validTo: tOptional(tNumber),
+  });
+  scheme.RequestSizes = tObject({
+    requestBodySize: tNumber,
+    requestHeadersSize: tNumber,
+    responseBodySize: tNumber,
+    responseHeadersSize: tNumber,
   });
   scheme.RemoteAddr = tObject({
     ipAddress: tString,
@@ -1056,7 +1158,6 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
   });
   scheme.CDPSessionDetachParams = tOptional(tObject({}));
   scheme.ElectronLaunchParams = tObject({
-    sdkLanguage: tString,
     executablePath: tOptional(tString),
     args: tOptional(tArray(tString)),
     cwd: tOptional(tString),
@@ -1089,6 +1190,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
         height: tNumber,
       })),
     })),
+    strictSelectors: tOptional(tBoolean),
     timezoneId: tOptional(tString),
   });
   scheme.ElectronApplicationBrowserWindowParams = tObject({
@@ -1193,7 +1295,6 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     steps: tNumber,
   });
   scheme.AndroidDeviceLaunchBrowserParams = tObject({
-    sdkLanguage: tString,
     pkg: tOptional(tString),
     ignoreHTTPSErrors: tOptional(tBoolean),
     javaScriptEnabled: tOptional(tBoolean),
@@ -1218,6 +1319,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     hasTouch: tOptional(tBoolean),
     colorScheme: tOptional(tEnum(['dark', 'light', 'no-preference'])),
     reducedMotion: tOptional(tEnum(['reduce', 'no-preference'])),
+    forcedColors: tOptional(tEnum(['active', 'none'])),
     acceptDownloads: tOptional(tBoolean),
     _debugName: tOptional(tString),
     recordVideo: tOptional(tObject({
@@ -1231,6 +1333,7 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
       omitContent: tOptional(tBoolean),
       path: tString,
     })),
+    strictSelectors: tOptional(tBoolean),
     proxy: tOptional(tObject({
       server: tString,
       bypass: tOptional(tString),
@@ -1257,7 +1360,6 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     timeout: tNumber,
   });
   scheme.AndroidDeviceConnectToWebViewParams = tObject({
-    sdkLanguage: tString,
     pid: tNumber,
   });
   scheme.AndroidDeviceCloseParams = tOptional(tObject({}));
@@ -1307,14 +1409,10 @@ export function createScheme(tChannel: (name: string) => Validator): Scheme {
     scrollable: tBoolean,
     selected: tBoolean,
   });
-  scheme.SocksSocketWriteParams = tObject({
-    data: tBinary,
+  scheme.JsonPipeSendParams = tObject({
+    message: tAny,
   });
-  scheme.SocksSocketErrorParams = tObject({
-    error: tString,
-  });
-  scheme.SocksSocketConnectedParams = tOptional(tObject({}));
-  scheme.SocksSocketEndParams = tOptional(tObject({}));
+  scheme.JsonPipeCloseParams = tOptional(tObject({}));
 
   return scheme;
 }

@@ -41,7 +41,7 @@ it('should emit created and destroyed events', async function({page}) {
   await page.evaluate(workerObj => workerObj.terminate(), workerObj);
   expect(await workerDestroyedPromise).toBe(worker);
   const error = await workerThisObj.getProperty('self').catch(error => error);
-  expect(error.message).toContain('Most likely the worker has been closed.');
+  expect(error.message).toContain('Target closed');
 });
 
 it('should report console logs', async function({page}) {
@@ -67,11 +67,14 @@ it('should not report console logs from workers twice', async function({page}) {
   expect(page.url()).not.toContain('blob');
 });
 
-it('should have JSHandles for console logs', async function({page}) {
+it('should have JSHandles for console logs', async function({ page, browserName }) {
   const logPromise = new Promise<ConsoleMessage>(x => page.on('console', x));
   await page.evaluate(() => new Worker(URL.createObjectURL(new Blob(['console.log(1,2,3,this)'], {type: 'application/javascript'}))));
   const log = await logPromise;
-  expect(log.text()).toBe('1 2 3 JSHandle@object');
+  if (browserName !== 'firefox')
+    expect(log.text()).toBe('1 2 3 DedicatedWorkerGlobalScope');
+  else
+    expect(log.text()).toBe('1 2 3 JSHandle@object');
   expect(log.args().length).toBe(4);
   expect(await (await log.args()[3].getProperty('origin')).jsonValue()).toBe('null');
 });

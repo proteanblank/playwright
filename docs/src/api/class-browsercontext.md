@@ -189,6 +189,12 @@ Service workers are only supported on Chromium-based browsers.
 
 Emitted when new service worker is created in the context.
 
+## property: BrowserContext._request
+* langs: js
+- type: <[FetchRequest]>
+
+API testing helper associated with this context. Requests made with this API will use context cookies.
+
 ## async method: BrowserContext.addCookies
 
 Adds cookies into this browser context. All pages within this context will have these cookies installed. Cookies can be
@@ -349,7 +355,7 @@ context.clear_permissions()
 ```csharp
 var context = await browser.NewContextAsync();
 await context.GrantPermissionsAsync(new[] { "clipboard-read" });
-// Alternatively, you can use the helper class ContextPermissions 
+// Alternatively, you can use the helper class ContextPermissions
 //  to specify the permissions...
 // do stuff ...
 await context.ClearPermissionsAsync();
@@ -589,7 +595,7 @@ await page.SetContentAsync("<script>\n" +
   "<div>Or click me</div>\n");
 
 await page.ClickAsync("div");
-// Note: it makes sense to await the result here, because otherwise, the context 
+// Note: it makes sense to await the result here, because otherwise, the context
 //  gets closed and the binding function will throw an exception.
 Assert.Equal("Click me", await result.Task);
 ```
@@ -834,9 +840,10 @@ CDP sessions are only supported on Chromium-based browsers.
 Returns the newly created session.
 
 ### param: BrowserContext.newCDPSession.page
-- `page` <[Page]>
+- `page` <[Page]|[Frame]>
 
-Page to create new session for.
+Target to create new session for. For backwards-compatibility, this parameter is
+named `page`, but it can be a `Page` or `Frame` type.
 
 ## async method: BrowserContext.newPage
 - returns: <[Page]>
@@ -852,6 +859,10 @@ Returns all open pages in the context.
 
 Routing provides the capability to modify network requests that are made by any page in the browser context. Once route
 is enabled, every request matching the url pattern will stall unless it's continued, fulfilled or aborted.
+
+:::note
+[`method: Page.route`] will not intercept requests intercepted by Service Worker. See [this](https://github.com/microsoft/playwright/issues/1090) issue. We recommend disabling Service Workers when using request interception. Via `await context.addInitScript(() => delete window.navigator.serviceWorker);`
+:::
 
 An example of a naive handler that aborts all image requests:
 
@@ -1015,6 +1026,11 @@ handler function to route the request.
 - `handler` <[function]\([Route]\)>
 
 handler function to route the request.
+
+### option: BrowserContext.route.times
+- `times` <[int]>
+
+How often a route should be used. By default it will be used every time.
 
 ## method: BrowserContext.serviceWorkers
 * langs: js, python

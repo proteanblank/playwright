@@ -14,21 +14,9 @@
  * limitations under the License.
  */
 
-export type ResourceSnapshot = {
-  resourceId: string,
-  pageId: string,
-  frameId: string,
-  url: string,
-  type: string,
-  contentType: string,
-  responseHeaders: { name: string, value: string }[],
-  requestHeaders: { name: string, value: string }[],
-  method: string,
-  status: number,
-  requestSha1: string,
-  responseSha1: string,
-  timestamp: number,
-};
+import { Entry as HAREntry } from '../supplements/har/har';
+
+export type ResourceSnapshot = HAREntry;
 
 export type NodeSnapshot =
   // Text node.
@@ -63,9 +51,9 @@ export type FrameSnapshot = {
   isMainFrame: boolean,
 };
 
-export type ContextResources = Map<string, { resourceId: string, frameId: string }[]>;
-
 export type RenderedFrameSnapshot = {
   html: string;
-  resources: { [key: string]: { resourceId: string, sha1?: string } };
+  pageId: string;
+  frameId: string;
+  index: number;
 };

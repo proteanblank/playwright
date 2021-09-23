@@ -14,66 +14,21 @@
  * limitations under the License.
  */
 
-import type { Expect } from './types';
+import type { TestInfoImpl } from './types';
 import util from 'util';
 import path from 'path';
+import url from 'url';
 import type { TestError, Location } from './types';
 import { default as minimatch } from 'minimatch';
 import { errors } from '../..';
+import debug from 'debug';
+import { isRegExp } from '../utils/utils';
 
-export class DeadlineRunner<T> {
-  private _timer: NodeJS.Timer | undefined;
-  private _done = false;
-  private _fulfill!: (t: { result?: T, timedOut?: boolean }) => void;
-  private _reject!: (error: any) => void;
-
-  readonly result: Promise<{ result?: T, timedOut?: boolean }>;
-
-  constructor(promise: Promise<T>, deadline: number | undefined) {
-    this.result = new Promise((f, r) => {
-      this._fulfill = f;
-      this._reject = r;
-    });
-    promise.then(result => {
-      this._finish({ result });
-    }).catch(e => {
-      this._finish(undefined, e);
-    });
-    this.setDeadline(deadline);
-  }
-
-  private _finish(success?: { result?: T, timedOut?: boolean }, error?: any) {
-    if (this._done)
-      return;
-    this.setDeadline(undefined);
-    if (success)
-      this._fulfill(success);
-    else
-      this._reject(error);
-  }
-
-  setDeadline(deadline: number | undefined) {
-    if (this._timer) {
-      clearTimeout(this._timer);
-      this._timer = undefined;
-    }
-    if (deadline === undefined)
-      return;
-    const timeout = deadline - monotonicTime();
-    if (timeout <= 0)
-      this._finish({ timedOut: true });
-    else
-      this._timer = setTimeout(() => this._finish({ timedOut: true }), timeout);
-  }
-}
-
-export async function raceAgainstDeadline<T>(promise: Promise<T>, deadline: number | undefined): Promise<{ result?: T, timedOut?: boolean }> {
-  return (new DeadlineRunner(promise, deadline)).result;
-}
-
-export async function pollUntilDeadline(state: ReturnType<Expect['getState']>, func: (remainingTime: number) => Promise<boolean>, pollTime: number | undefined, pollInterval: number, deadlinePromise: Promise<void>): Promise<void> {
-  const playwrightActionTimeout = (state as any).playwrightActionTimeout;
-  pollTime = pollTime === 0 ? 0 : pollTime || playwrightActionTimeout;
+export async function pollUntilDeadline(testInfo: TestInfoImpl, func: (remainingTime: number) => Promise<boolean>, pollTime: number | undefined, deadlinePromise: Promise<void>): Promise<void> {
+  let defaultExpectTimeout = testInfo.project.expect?.timeout;
+  if (typeof defaultExpectTimeout === 'undefined')
+    defaultExpectTimeout = 5000;
+  pollTime = pollTime === 0 ? 0 : pollTime || defaultExpectTimeout;
   const deadline = pollTime ? monotonicTime() + pollTime : 0;
 
   let aborted = false;
@@ -82,6 +37,8 @@ export async function pollUntilDeadline(state: ReturnType<Expect['getState']>, f
     return true;
   });
 
+  const pollIntervals = [100, 250, 500];
+  let attempts = 0;
   while (!aborted) {
     const remainingTime = deadline ? deadline - monotonicTime() : 1000 * 3600 * 24;
     if (remainingTime <= 0)
@@ -102,7 +59,7 @@ export async function pollUntilDeadline(state: ReturnType<Expect['getState']>, f
     }
 
     let timer: NodeJS.Timer;
-    const timeoutPromise = new Promise(f => timer = setTimeout(f, pollInterval));
+    const timeoutPromise = new Promise(f => timer = setTimeout(f, pollIntervals[attempts++] || 1000));
     await Promise.race([abortedPromise, timeoutPromise]);
     clearTimeout(timer!);
   }
@@ -126,10 +83,6 @@ export function monotonicTime(): number {
   return seconds * 1000 + (nanoseconds / 1000000 | 0);
 }
 
-export function isRegExp(e: any): e is RegExp {
-  return e && typeof e === 'object' && (e instanceof RegExp || Object.prototype.toString.call(e) === '[object RegExp]');
-}
-
 export type Matcher = (value: string) => boolean;
 
 export type FilePatternFilter = {
@@ -137,7 +90,7 @@ export type FilePatternFilter = {
   line: number | null;
 };
 
-export function createMatcher(patterns: string | RegExp | (string | RegExp)[]): Matcher {
+export function createFileMatcher(patterns: string | RegExp | (string | RegExp)[]): Matcher {
   const reList: RegExp[] = [];
   const filePatterns: string[] = [];
   for (const pattern of Array.isArray(patterns) ? patterns : [patterns]) {
@@ -150,17 +103,36 @@ export function createMatcher(patterns: string | RegExp | (string | RegExp)[]): 
         filePatterns.push(pattern);
     }
   }
+  return (filePath: string) => {
+    for (const re of reList) {
+      re.lastIndex = 0;
+      if (re.test(filePath))
+        return true;
+    }
+    // Windows might still recieve unix style paths from Cygwin or Git Bash.
+    // Check against the file url as well.
+    if (path.sep === '\\') {
+      const fileURL = url.pathToFileURL(filePath).href;
+      for (const re of reList) {
+        re.lastIndex = 0;
+        if (re.test(fileURL))
+          return true;
+      }
+    }
+    for (const pattern of filePatterns) {
+      if (minimatch(filePath, pattern, { nocase: true, dot: true }))
+        return true;
+    }
+    return false;
+  };
+}
 
+export function createTitleMatcher(patterns:  RegExp | RegExp[]): Matcher {
+  const reList = Array.isArray(patterns) ? patterns : [patterns];
   return (value: string) => {
     for (const re of reList) {
       re.lastIndex = 0;
       if (re.test(value))
-        return true;
-    }
-    for (const pattern of filePatterns) {
-      if (minimatch(value, pattern, {
-        nocase: true,
-      }))
         return true;
     }
     return false;
@@ -211,3 +183,9 @@ export function expectType(receiver: any, type: string, matcherName: string) {
   if (typeof receiver !== 'object' || receiver.constructor.name !== type)
     throw new Error(`${matcherName} can be only used with ${type} object`);
 }
+
+export function sanitizeForFilePath(s: string) {
+  return s.replace(/[\x00-\x2F\x3A-\x40\x5B-\x60\x7B-\x7F]+/g, '-');
+}
+
+export const debugTest = debug('pw:test');
