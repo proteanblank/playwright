@@ -152,13 +152,13 @@ const TestFileSummaryView: React.FC<{
     {file.tests.filter(t => filter.matches(t)).map(test =>
       <div key={`test-${test.testId}`} className={'test-summary outcome-' + test.outcome}>
         <span style={{ float: 'right' }}>{msToString(test.duration)}</span>
+        {report.projectNames.length > 1 && !!test.projectName &&
+          <span style={{ float: 'right' }}><ProjectLink report={report} projectName={test.projectName}></ProjectLink></span>}
         {statusIcon(test.outcome)}
         <Link href={`#?testId=${test.testId}`} title={[...test.path, test.title].join(' › ')}>
           {[...test.path, test.title].join(' › ')}
           <span className='test-summary-path'>— {test.location.file}:{test.location.line}</span>
         </Link>
-        {report.projectNames.length > 1 && !!test.projectName &&
-          <ProjectLink report={report} projectName={test.projectName}></ProjectLink>}
       </div>
     )}
   </Chip>;
@@ -189,10 +189,19 @@ const TestCaseView: React.FC<{
 
   const [selectedResultIndex, setSelectedResultIndex] = React.useState(0);
   return <div className='test-case-column vbox'>
+    <div className='status-container ml-2 pl-2 d-flex' style={{ flexFlow: 'row-reverse' }}>
+      <StatsNavView stats={report.stats}></StatsNavView>
+    </div>
     {test && <div className='test-case-path'>{test.path.join(' › ')}</div>}
     {test && <div className='test-case-title'>{test?.title}</div>}
     {test && <div className='test-case-location'>{test.location.file}:{test.location.line}</div>}
     {test && !!test.projectName && <ProjectLink report={report} projectName={test.projectName}></ProjectLink>}
+    {test && !!test.annotations.length && <Chip header='Annotations'>
+      {test.annotations.map(a => <div className='test-case-annotation'>
+        <span style={{ fontWeight: 'bold' }}>{a.type}</span>
+        {a.description && <span>: {a.description}</span>}
+      </div>)}
+    </Chip>}
     {test && <TabbedPane tabs={
       test.results.map((result, index) => ({
         id: String(index),
@@ -279,7 +288,7 @@ const StepTreeItem: React.FC<{
 }> = ({ step, depth }) => {
   return <TreeItem title={<span>
     <span style={{ float: 'right' }}>{msToString(step.duration)}</span>
-    {statusIcon(step.error ? 'failed' : 'passed')}
+    {statusIcon(step.error || step.duration === -1 ? 'failed' : 'passed')}
     <span>{step.title}</span>
     {step.location && <span className='test-summary-path'>— {step.location.file}:{step.location.line}</span>}
   </span>} loadChildren={step.steps.length + (step.snippet ? 1 : 0) ? () => {
